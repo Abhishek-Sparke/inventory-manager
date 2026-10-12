@@ -109,6 +109,10 @@ class DailyProgressListCreateView(generics.ListCreateAPIView):
         if date_param:
             queryset = queryset.filter(date=date_param)
 
+        task_id = self.request.query_params.get("task_id") or self.request.query_params.get("linked_task")
+        if task_id:
+            queryset = queryset.filter(linked_task_id=task_id)
+
         start_date = self.request.query_params.get("start_date")
         end_date = self.request.query_params.get("end_date")
         if start_date:

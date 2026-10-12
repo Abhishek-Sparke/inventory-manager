@@ -16,6 +16,7 @@ import { getLocalDateString, formatLocalTime } from '@/utils/timezone';
 export interface TaskSavePayload {
   title: string;
   description: string;
+  journalEntry: string;
   date: string;
   startTime: string;
   endTime: string | null;
@@ -49,7 +50,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   onSave,
 }) => {
   const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [journalEntry, setJournalEntry] = useState('');
   const [date, setDate] = useState(() => initialDate || getLocalDateString());
   const [startTime, setStartTime] = useState('09:00');
   const [endTime, setEndTime] = useState('10:00');
@@ -67,7 +68,12 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
     if (editingTask) {
       setTitle(editingTask.title);
-      setDescription(editingTask.description || '');
+      const existingJournal =
+        editingTask.journal_entry ||
+        editingTask.notes ||
+        editingTask.description ||
+        '';
+      setJournalEntry(existingJournal);
 
       if (editingTask.scheduled_at) {
         const d = new Date(editingTask.scheduled_at);
@@ -96,7 +102,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
     } else {
       // New task
       setTitle('');
-      setDescription('');
+      setJournalEntry('');
       setDate(initialDate || getLocalDateString());
       setStartTime('09:00');
       setEndTime('10:00');
@@ -120,15 +126,17 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       return;
     }
 
+    const journalTrimmed = journalEntry.trim();
     onSave({
       title: title.trim(),
-      description: description.trim(),
+      description: journalTrimmed,
+      journalEntry: journalTrimmed,
       date: date.trim(),
       startTime: startTime.trim(),
       endTime: hasEndTime ? endTime.trim() : null,
       priority,
       status,
-      notes: notes.trim(),
+      notes: notes.trim() || journalTrimmed,
       reminderEnabled,
       reminderOffset,
       scheduleAcrossRange,
@@ -177,17 +185,25 @@ export const TaskModal: React.FC<TaskModalProps> = ({
               />
             </View>
 
-            {/* Description */}
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Detailed Description</Text>
+            {/* Daily Progress Journal Section */}
+            <View style={styles.journalSectionCard}>
+              <View style={styles.journalSectionHeader}>
+                <Text style={styles.journalSectionIcon}>📝</Text>
+                <View style={styles.journalTitleCol}>
+                  <Text style={styles.journalSectionTitle}>Daily Progress Journal</Text>
+                  <Text style={styles.journalSectionSubtitle}>
+                    Log task assignment progress and accomplishments for this day
+                  </Text>
+                </View>
+              </View>
               <TextInput
-                style={[styles.formInput, styles.formTextArea]}
-                placeholder="Optional task instructions, checklist items, or notes"
+                style={[styles.formInput, styles.journalTextArea]}
+                placeholder="e.g. Conducted stock audit of 50 SKUs, reconciled cooler inventory, verified counts..."
                 placeholderTextColor="#94A3B8"
-                value={description}
-                onChangeText={setDescription}
+                value={journalEntry}
+                onChangeText={setJournalEntry}
                 multiline
-                numberOfLines={2}
+                numberOfLines={3}
               />
             </View>
 
@@ -513,6 +529,41 @@ const styles = StyleSheet.create({
   },
   formTextArea: {
     minHeight: 52,
+    textAlignVertical: 'top',
+  },
+  journalSectionCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 12,
+  },
+  journalSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  journalSectionIcon: {
+    fontSize: 16,
+  },
+  journalTitleCol: {
+    flex: 1,
+  },
+  journalSectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  journalSectionSubtitle: {
+    fontSize: 10,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  journalTextArea: {
+    backgroundColor: '#FFFFFF',
+    minHeight: 64,
     textAlignVertical: 'top',
   },
   checkboxRow: {

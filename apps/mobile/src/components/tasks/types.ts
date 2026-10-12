@@ -11,6 +11,13 @@ export type Task = {
   status?: TaskStatus;
   is_completed: boolean;
   notes?: string;
+  journal_entry?: string;
+  daily_progress?: {
+    id?: number;
+    date: string;
+    description: string;
+    notes?: string;
+  } | null;
   reminder_minutes?: number | null;
   created_at: string;
   updated_at: string;

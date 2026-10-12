@@ -469,3 +469,84 @@ class SharedWorkspaceAndTaskProgressAPITests(APITestCase):
         )
         self.assertEqual(task_res.status_code, status.HTTP_200_OK)
         self.assertTrue(task_res.data["is_completed"])
+
+    def test_task_creation_with_journal_entry_persists_and_links_daily_progress(self):
+        """Verifies creating a task with a journal entry saves the note and associates DailyProgress."""
+        from .models import DailyProgress
+        url = reverse("task-list-create")
+        payload = {
+            "title": "Cooler Aisle Audit",
+            "scheduled_at": "2026-10-12T09:30:00Z",
+            "priority": "high",
+            "is_completed": False,
+            "status": "pending",
+            "notes": "Audited 40 crates in Section B, zero discrepancy.",
+        }
+        response = self.client.post(url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["notes"], payload["notes"])
+        self.assertEqual(response.data["journal_entry"], payload["notes"])
+        self.assertIsNotNone(response.data["daily_progress"])
+        self.assertEqual(response.data["daily_progress"]["date"], "2026-10-12")
+
+        # Verify DailyProgress model in DB
+        dp = DailyProgress.objects.filter(date="2026-10-12").first()
+        self.assertIsNotNone(dp)
+        self.assertIn("Audited 40 crates in Section B", dp.description)
+        self.assertEqual(dp.linked_task_id, response.data["id"])
+
+    def test_multiple_tasks_same_date_updates_daily_progress_without_duplicate_error(self):
+        """Verifies multiple tasks on the same date safely update DailyProgress without duplicate key crash."""
+        from .models import DailyProgress
+        url = reverse("task-list-create")
+        # Task 1 on 2026-10-15
+        res1 = self.client.post(
+            url,
+            {
+                "title": "Morning Freezer Check",
+                "scheduled_at": "2026-10-15T08:00:00Z",
+                "notes": "Freezer temperature normal at -18C.",
+                "is_completed": False,
+            },
+            format="json",
+        )
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+
+        # Task 2 on 2026-10-15 (same date)
+        res2 = self.client.post(
+            url,
+            {
+                "title": "Afternoon Dry Goods Count",
+                "scheduled_at": "2026-10-15T14:00:00Z",
+                "notes": "Counted 120 bags of organic flour.",
+                "is_completed": False,
+            },
+            format="json",
+        )
+        self.assertEqual(res2.status_code, status.HTTP_201_CREATED)
+
+        # There should still be exactly 1 DailyProgress record for 2026-10-15
+        dp_count = DailyProgress.objects.filter(date="2026-10-15").count()
+        self.assertEqual(dp_count, 1)
+
+        dp = DailyProgress.objects.get(date="2026-10-15")
+        self.assertIn("Freezer temperature normal", dp.description)
+        self.assertIn("Counted 120 bags of organic flour", dp.description)
+
+    def test_journal_entry_does_not_count_as_completed_task(self):
+        """Verifies entering a daily progress journal note does not falsely mark task as completed or alter progress."""
+        url = reverse("task-list-create")
+        payload = {
+            "title": "Pending Task with Journal Note",
+            "scheduled_at": "2026-10-12T16:00:00Z",
+            "is_completed": False,
+            "status": "pending",
+            "notes": "Observations recorded, pending manager sign-off.",
+        }
+        res = self.client.post(url, payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(res.data["is_completed"])
+        self.assertEqual(res.data["status"], "pending")
+        task = Task.objects.get(pk=res.data["id"])
+        self.assertFalse(task.is_completed)
+        self.assertEqual(task.status, "pending")

@@ -591,17 +591,19 @@ export default function TasksScreen() {
         ? buildScheduledIsoString(payload.date, payload.endTime)
         : null;
 
+      const journalNote = (payload.journalEntry || payload.notes || payload.description || '').trim();
+
       if (editingTask) {
         // UPDATE existing task
         const bodyPayload = {
           title: payload.title,
-          description: payload.description,
+          description: journalNote,
           priority: payload.priority,
           status: payload.status,
           is_completed: payload.status === 'completed',
           scheduled_at: scheduledIso,
           end_at: endIso,
-          notes: payload.notes,
+          notes: journalNote,
           reminder_minutes: payload.reminderEnabled ? payload.reminderOffset : null,
         };
 
@@ -619,6 +621,29 @@ export default function TasksScreen() {
         const updated: Task = await res.json();
         setTasks(prev => prev.map(t => (t.id === updated.id ? updated : t)));
         notifyTaskChange();
+
+        // Associate with DailyProgress journal
+        if (journalNote && payload.date) {
+          try {
+            const existingDp = dailyProgressMap[payload.date] || (await fetchDailyProgress(payload.date));
+            let mergedDescription = journalNote;
+            if (existingDp && existingDp.description && existingDp.description.trim()) {
+              if (!existingDp.description.includes(journalNote)) {
+                mergedDescription = `${existingDp.description.trim()}\n• [${updated.title}]: ${journalNote}`;
+              } else {
+                mergedDescription = existingDp.description;
+              }
+            }
+            const savedDp = await saveDailyProgress({
+              date: payload.date,
+              description: mergedDescription,
+              linked_task: updated.id,
+            });
+            setDailyProgressMap(prev => ({ ...prev, [payload.date]: savedDp }));
+          } catch (dpErr) {
+            console.warn('[handleSaveTask] Daily progress sync error:', dpErr);
+          }
+        }
 
         // Update reminder
         if (payload.reminderEnabled && updated.scheduled_at && !updated.is_completed) {
@@ -655,13 +680,13 @@ export default function TasksScreen() {
 
           const bodyPayload = {
             title: payload.title,
-            description: payload.description,
+            description: journalNote,
             priority: payload.priority,
             status: payload.status,
             is_completed: payload.status === 'completed',
             scheduled_at: itemScheduledIso,
             end_at: itemEndIso,
-            notes: payload.notes,
+            notes: journalNote,
             reminder_minutes: payload.reminderEnabled ? payload.reminderOffset : null,
           };
 
@@ -678,6 +703,29 @@ export default function TasksScreen() {
 
           const created: Task = await res.json();
           createdItems.push(created);
+
+          // Associate with DailyProgress journal for this date
+          if (journalNote) {
+            try {
+              const existingDp = dailyProgressMap[dateItem] || (await fetchDailyProgress(dateItem));
+              let mergedDescription = journalNote;
+              if (existingDp && existingDp.description && existingDp.description.trim()) {
+                if (!existingDp.description.includes(journalNote)) {
+                  mergedDescription = `${existingDp.description.trim()}\n• [${created.title}]: ${journalNote}`;
+                } else {
+                  mergedDescription = existingDp.description;
+                }
+              }
+              const savedDp = await saveDailyProgress({
+                date: dateItem,
+                description: mergedDescription,
+                linked_task: created.id,
+              });
+              setDailyProgressMap(prev => ({ ...prev, [dateItem]: savedDp }));
+            } catch (dpErr) {
+              console.warn('[handleSaveTask] Daily progress sync error:', dpErr);
+            }
+          }
 
           if (payload.reminderEnabled && created.scheduled_at && !created.is_completed) {
             const sRes = await scheduleTaskReminderAsync(created, payload.reminderOffset);

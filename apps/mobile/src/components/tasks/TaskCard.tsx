@@ -57,16 +57,20 @@ export const TaskCard: React.FC<TaskCardProps> = ({
             {task.title}
           </Text>
 
-          {Boolean(task.description) && (
-            <Text
-              style={[
-                styles.taskDescription,
-                task.is_completed && styles.taskDescriptionCompleted,
-              ]}
-              numberOfLines={2}
-            >
-              {task.description}
-            </Text>
+          {/* Daily Progress Journal Note */}
+          {Boolean(task.journal_entry || task.notes || task.description) && (
+            <View style={styles.journalBox}>
+              <Text style={styles.journalIcon}>📝</Text>
+              <Text
+                style={[
+                  styles.journalText,
+                  task.is_completed && styles.journalTextCompleted,
+                ]}
+                numberOfLines={2}
+              >
+                {task.journal_entry || task.notes || task.description}
+              </Text>
+            </View>
           )}
 
           {/* Metadata Badges */}
@@ -212,6 +216,32 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   taskDescriptionCompleted: {
+    textDecorationLine: 'line-through',
+    color: '#94A3B8',
+  },
+  journalBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    marginTop: 4,
+    gap: 6,
+  },
+  journalIcon: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  journalText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#334155',
+    lineHeight: 16,
+  },
+  journalTextCompleted: {
     textDecorationLine: 'line-through',
     color: '#94A3B8',
   },
