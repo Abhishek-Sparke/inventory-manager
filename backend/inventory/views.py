@@ -1,18 +1,57 @@
+import logging
 from rest_framework import generics, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .models import Product, PushDevice, Task, DailyProgress
 from .serializers import ProductSerializer, TaskSerializer, DailyProgressSerializer
 
+logger = logging.getLogger(__name__)
+
 
 class ProductListCreateView(generics.ListCreateAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
 
+    def perform_create(self, serializer):
+        product = serializer.save()
+        if product.quantity <= product.reorder_level:
+            try:
+                from .notifications import send_low_stock_push_notification
+                send_low_stock_push_notification(product)
+            except Exception as exc:
+                logger.warning(
+                    "Low stock notification dispatch failed for created product %s: %s",
+                    product.id,
+                    type(exc).__name__,
+                )
+
 
 class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        old_quantity = instance.quantity
+        old_reorder_level = instance.reorder_level
+        product = serializer.save()
+        new_quantity = product.quantity
+        new_reorder_level = product.reorder_level
+
+        # Crossing event: quantity was above threshold and is now at or below threshold
+        was_above = old_quantity > old_reorder_level
+        is_now_low = new_quantity <= new_reorder_level
+
+        if was_above and is_now_low:
+            try:
+                from .notifications import send_low_stock_push_notification
+                send_low_stock_push_notification(product)
+            except Exception as exc:
+                logger.warning(
+                    "Low stock notification dispatch failed for updated product %s: %s",
+                    product.id,
+                    type(exc).__name__,
+                )
 
 
 class TaskListCreateView(generics.ListCreateAPIView):

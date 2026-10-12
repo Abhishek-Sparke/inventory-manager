@@ -181,6 +181,69 @@ function evaluateProductAlerts(products, advanceWarningDays = 7) {
   return { restockAlerts, expiryAlerts, allAlerts: [...restockAlerts, ...expiryAlerts] };
 }
 
+// 3. Inventory Alert Transition Evaluator Simulation (Matching services/inventory-alerts.ts)
+function evaluateInventoryAlertTransitions(products, currentStore) {
+  const nextStore = { ...currentStore };
+  const alertsToDispatch = [];
+  const replenishedProductIds = [];
+
+  for (const product of products) {
+    const qty = Number(product.quantity ?? 0);
+    const threshold = Number(product.reorder_level ?? 10);
+    const isLow = qty <= threshold;
+    const isZero = qty === 0;
+    const prev = currentStore[product.id];
+
+    if (!isLow) {
+      if (prev && prev.isLowStock) {
+        replenishedProductIds.push(product.id);
+      }
+      nextStore[product.id] = {
+        productId: product.id,
+        lastQuantity: qty,
+        threshold,
+        isLowStock: false,
+        alertDelivered: false,
+      };
+    } else {
+      const isThresholdCrossing = !prev || !prev.isLowStock || !prev.alertDelivered;
+
+      if (isThresholdCrossing) {
+        const title = isZero
+          ? `🚨 Restock Needed: ${product.name}`
+          : `⚠️ Low Stock Alert: ${product.name}`;
+        const body = isZero
+          ? `${product.name} is out of stock! Current quantity: 0 (Threshold: ${threshold}). Restock required.`
+          : `${product.name} is running low! Current quantity: ${qty} (Threshold: ${threshold}). Restock needed.`;
+
+        alertsToDispatch.push({
+          product,
+          alertType: isZero ? 'out_of_stock' : 'low_stock',
+          title,
+          body,
+        });
+
+        nextStore[product.id] = {
+          productId: product.id,
+          lastQuantity: qty,
+          threshold,
+          isLowStock: true,
+          alertDelivered: true,
+          lastAlertTimestamp: Date.now(),
+        };
+      } else {
+        nextStore[product.id] = {
+          ...prev,
+          lastQuantity: qty,
+          threshold,
+        };
+      }
+    }
+  }
+
+  return { alertsToDispatch, nextStore, replenishedProductIds };
+}
+
 // ======================== EXECUTE SCENARIO TESTS ========================
 
 console.log('--- Starting StockFlow Upgrades Scenario Tests ---');
@@ -610,5 +673,150 @@ console.log('--- Starting StockFlow Upgrades Scenario Tests ---');
   console.log('✓ Scenario 16 PASSED: View switching across Today, Upcoming 7D, All Tasks, and Calendar verified.');
 }
 
-console.log('\n=== ALL 16 SCENARIOS VERIFIED SUCCESSFULLY ===');
+// Scenario 17: Low-stock threshold crossing detection
+{
+  let alertStore = {};
+  const healthyProduct = [{ id: 501, name: 'Arabica Coffee', quantity: 25, reorder_level: 10, sku: 'COF-01' }];
 
+  // 1. Initial healthy state
+  const initRes = evaluateInventoryAlertTransitions(healthyProduct, alertStore);
+  alertStore = initRes.nextStore;
+  assert.strictEqual(initRes.alertsToDispatch.length, 0, 'No alert when quantity is above threshold');
+  assert.strictEqual(alertStore[501].isLowStock, false);
+  assert.strictEqual(alertStore[501].alertDelivered, false);
+
+  // 2. Quantity crosses from above threshold (25) to at/below threshold (8)
+  const lowProduct = [{ id: 501, name: 'Arabica Coffee', quantity: 8, reorder_level: 10, sku: 'COF-01' }];
+  const crossingRes = evaluateInventoryAlertTransitions(lowProduct, alertStore);
+  alertStore = crossingRes.nextStore;
+
+  assert.strictEqual(crossingRes.alertsToDispatch.length, 1, 'Crossing threshold must trigger 1 alert');
+  const alert = crossingRes.alertsToDispatch[0];
+  assert.strictEqual(alert.product.id, 501);
+  assert.strictEqual(alert.alertType, 'low_stock');
+  assert.strictEqual(alert.title.includes('Arabica Coffee'), true, 'Title must include product name');
+  assert.strictEqual(alert.body.includes('8'), true, 'Body must include current quantity');
+  assert.strictEqual(alert.body.includes('10'), true, 'Body must include reorder threshold');
+  assert.strictEqual(alertStore[501].isLowStock, true);
+  assert.strictEqual(alertStore[501].alertDelivered, true);
+
+  console.log('✓ Scenario 17 PASSED: Low-stock threshold crossing triggers alert with product name, quantity, and threshold.');
+}
+
+// Scenario 18: Duplicate suppression for unresolved low-stock condition
+{
+  let alertStore = {
+    501: { productId: 501, lastQuantity: 8, threshold: 10, isLowStock: true, alertDelivered: true },
+  };
+
+  // Stock decreases further from 8 to 5 (unresolved low-stock condition)
+  const stillLowProduct = [{ id: 501, name: 'Arabica Coffee', quantity: 5, reorder_level: 10, sku: 'COF-01' }];
+  const suppressedRes = evaluateInventoryAlertTransitions(stillLowProduct, alertStore);
+  alertStore = suppressedRes.nextStore;
+
+  assert.strictEqual(suppressedRes.alertsToDispatch.length, 0, 'Duplicate alert must be suppressed for unresolved condition');
+  assert.strictEqual(alertStore[501].isLowStock, true);
+  assert.strictEqual(alertStore[501].alertDelivered, true);
+  assert.strictEqual(alertStore[501].lastQuantity, 5);
+
+  console.log('✓ Scenario 18 PASSED: Duplicate notifications cleanly suppressed for unresolved low-stock condition.');
+}
+
+// Scenario 19: Stock replenishment resets alert state and enables re-triggering
+{
+  let alertStore = {
+    501: { productId: 501, lastQuantity: 5, threshold: 10, isLowStock: true, alertDelivered: true },
+  };
+
+  // 1. Stock is replenished from 5 to 35 units (above threshold 10)
+  const replenishedProduct = [{ id: 501, name: 'Arabica Coffee', quantity: 35, reorder_level: 10, sku: 'COF-01' }];
+  const replenishRes = evaluateInventoryAlertTransitions(replenishedProduct, alertStore);
+  alertStore = replenishRes.nextStore;
+
+  assert.strictEqual(replenishRes.replenishedProductIds.includes(501), true, 'Product 501 identified as replenished');
+  assert.strictEqual(alertStore[501].isLowStock, false, 'isLowStock reset to false');
+  assert.strictEqual(alertStore[501].alertDelivered, false, 'alertDelivered reset to false');
+
+  // 2. Stock subsequently drops below threshold again (35 -> 4)
+  const droppedProduct = [{ id: 501, name: 'Arabica Coffee', quantity: 4, reorder_level: 10, sku: 'COF-01' }];
+  const retriggerRes = evaluateInventoryAlertTransitions(droppedProduct, alertStore);
+  alertStore = retriggerRes.nextStore;
+
+  assert.strictEqual(retriggerRes.alertsToDispatch.length, 1, 'Subsequent low-stock crossing must re-trigger new alert');
+  assert.strictEqual(retriggerRes.alertsToDispatch[0].body.includes('4'), true, 'New alert contains new quantity (4)');
+  assert.strictEqual(alertStore[501].isLowStock, true);
+  assert.strictEqual(alertStore[501].alertDelivered, true);
+
+  console.log('✓ Scenario 19 PASSED: Stock replenishment resets alert state and enables re-triggering upon future crossing.');
+}
+
+// Scenario 20: Persistent alert state across app restart simulation
+{
+  // 1. Initial app session has delivered an alert for product 502
+  const session1Store = {
+    502: { productId: 502, lastQuantity: 3, threshold: 10, isLowStock: true, alertDelivered: true, lastAlertTimestamp: 1000 },
+  };
+
+  // 2. Simulate saving to persistent storage (JSON stringify)
+  const persistedJson = JSON.stringify(session1Store);
+
+  // 3. Simulate cold start: memory is wiped, state loaded from storage
+  let session2Store = JSON.parse(persistedJson);
+  assert.strictEqual(session2Store[502].alertDelivered, true, 'Restored store preserves alertDelivered state');
+
+  // 4. Cold start evaluation with product still at 3 units
+  const coldStartProducts = [{ id: 502, name: 'Green Tea', quantity: 3, reorder_level: 10, sku: 'TEA-02' }];
+  const coldStartRes = evaluateInventoryAlertTransitions(coldStartProducts, session2Store);
+
+  assert.strictEqual(coldStartRes.alertsToDispatch.length, 0, 'Cold start must not trigger duplicate notification for already-alerted product');
+
+  console.log('✓ Scenario 20 PASSED: Alert state persisted across app restart simulation, preventing duplicate alerts.');
+}
+
+// Scenario 21: Out of stock (0 units) triggers restock-needed alert
+{
+  const emptyStore = {};
+  const outOfStockProducts = [{ id: 503, name: 'Organic Butter', quantity: 0, reorder_level: 15, sku: 'BUT-03' }];
+  const res = evaluateInventoryAlertTransitions(outOfStockProducts, emptyStore);
+
+  assert.strictEqual(res.alertsToDispatch.length, 1);
+  const alert = res.alertsToDispatch[0];
+  assert.strictEqual(alert.alertType, 'out_of_stock');
+  assert.strictEqual(alert.title.includes('Restock Needed'), true, 'Title specifies restock needed');
+  assert.strictEqual(alert.title.includes('Organic Butter'), true, 'Title includes product name');
+  assert.strictEqual(alert.body.includes('0'), true, 'Body specifies 0 quantity');
+  assert.strictEqual(alert.body.includes('15'), true, 'Body specifies threshold 15');
+
+  console.log('✓ Scenario 21 PASSED: Out of stock (0 units) triggers restock-needed alert with critical details.');
+}
+
+// Scenario 22: Closed-app vs in-app notification architecture verification
+{
+  const fs = require('fs');
+  const path = require('path');
+
+  // 1. Verify Android Notification Channel setup in notifications.ts
+  const notifFilePath = path.join(__dirname, '..', 'src', 'services', 'notifications.ts');
+  const notifContent = fs.readFileSync(notifFilePath, 'utf8');
+  assert.strictEqual(notifContent.includes('INVENTORY_ALERTS_CHANNEL_ID'), true, 'Must declare INVENTORY_ALERTS_CHANNEL_ID');
+  assert.strictEqual(notifContent.includes('inventory-alerts'), true, 'Must configure inventory-alerts channel');
+
+  // 2. Verify backend remote push notification helper exists
+  const backendNotifPath = path.join(__dirname, '..', '..', '..', 'backend', 'inventory', 'notifications.py');
+  assert.strictEqual(fs.existsSync(backendNotifPath), true, 'backend/inventory/notifications.py must exist');
+  const backendNotifContent = fs.readFileSync(backendNotifPath, 'utf8');
+  assert.strictEqual(backendNotifContent.includes('https://exp.host/--/api/v2/push/send'), true, 'Must use Expo Push API');
+  assert.strictEqual(backendNotifContent.includes('send_low_stock_push_notification'), true, 'Must define push dispatcher');
+  assert.strictEqual(backendNotifContent.includes('inventory-alerts'), true, 'Must specify inventory-alerts channel');
+
+  // 3. Verify backend view hooks perform_update with threshold crossing check
+  const backendViewsPath = path.join(__dirname, '..', '..', '..', 'backend', 'inventory', 'views.py');
+  const backendViewsContent = fs.readFileSync(backendViewsPath, 'utf8');
+  assert.strictEqual(backendViewsContent.includes('was_above = old_quantity > old_reorder_level'), true, 'Must check was_above threshold');
+  assert.strictEqual(backendViewsContent.includes('is_now_low = new_quantity <= new_reorder_level'), true, 'Must check is_now_low threshold');
+  assert.strictEqual(backendViewsContent.includes('send_low_stock_push_notification'), true, 'Must invoke push dispatcher on crossing');
+
+  console.log('✓ Scenario 22 PASSED: Verified in-app and closed-app notification architecture separation and implementation.');
+}
+
+console.log('\n=== ALL 22 SCENARIOS VERIFIED SUCCESSFULLY ===');

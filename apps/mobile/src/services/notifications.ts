@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import type * as NotificationsType from 'expo-notifications';
 
 export const TASK_REMINDER_CHANNEL_ID = 'task-reminders';
+export const INVENTORY_ALERTS_CHANNEL_ID = 'inventory-alerts';
 
 let isHandlerConfigured = false;
 
@@ -37,7 +38,7 @@ function getNotifications(): typeof NotificationsType | null {
 }
 
 /**
- * Configure foreground notification behavior and Android notification channel.
+ * Configure foreground notification behavior and Android notification channels.
  */
 export async function setupNotificationEnvironmentAsync(): Promise<void> {
   const Notifications = getNotifications();
@@ -69,8 +70,21 @@ export async function setupNotificationEnvironmentAsync(): Promise<void> {
         showBadge: true,
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
+
+      await Notifications.setNotificationChannelAsync(INVENTORY_ALERTS_CHANNEL_ID, {
+        name: 'Inventory Alerts',
+        description: 'Low-stock and restock alerts for StockFlow inventory',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 300, 200, 300],
+        lightColor: '#DC2626',
+        sound: 'default',
+        enableVibrate: true,
+        enableLights: true,
+        showBadge: true,
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      });
     } catch (error) {
-      console.warn('Failed to configure Android notification channel:', error);
+      console.warn('Failed to configure Android notification channels:', error);
     }
   }
 }
@@ -98,6 +112,46 @@ export async function requestNotificationPermissionAsync(): Promise<boolean> {
     return newStatus === 'granted';
   } catch (error) {
     console.error('Error requesting notification permissions:', error);
+    return false;
+  }
+}
+
+/**
+ * Dispatches an immediate local OS notification with optional sound, vibration, and data.
+ */
+export async function sendImmediateNotificationAsync(params: {
+  title: string;
+  body: string;
+  data?: Record<string, unknown>;
+  channelId?: string;
+}): Promise<boolean> {
+  const Notifications = getNotifications();
+  if (!Notifications) return false;
+
+  await setupNotificationEnvironmentAsync();
+
+  const hasPermission = await requestNotificationPermissionAsync();
+  if (!hasPermission) return false;
+
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: params.title,
+        body: params.body,
+        data: params.data,
+        sound: true,
+      },
+      trigger: Platform.OS === 'android'
+        ? {
+            type: Notifications.SchedulableTriggerInputTypes.DATE,
+            date: new Date(Date.now() + 100),
+            channelId: params.channelId || INVENTORY_ALERTS_CHANNEL_ID,
+          }
+        : null,
+    });
+    return true;
+  } catch (error) {
+    console.error('Failed to dispatch immediate notification:', error);
     return false;
   }
 }

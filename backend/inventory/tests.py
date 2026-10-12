@@ -180,6 +180,86 @@ class ProductAPIIntegrityTests(APITestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
+    def test_product_creation_triggers_low_stock_notification(self):
+        from unittest.mock import patch
+        url = reverse("product-list-create")
+        payload = {
+            "name": "Organic Honey",
+            "sku": "HONEY-001",
+            "price": "12.50",
+            "quantity": 3,
+            "reorder_level": 5,
+        }
+        with patch("inventory.notifications.send_low_stock_push_notification") as mock_notify:
+            response = self.client.post(url, payload, format="json")
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+            mock_notify.assert_called_once()
+
+    def test_product_update_crossing_triggers_notification(self):
+        from unittest.mock import patch
+        product = Product.objects.create(
+            name="Arabica Beans",
+            sku="COFFEE-001",
+            price="15.00",
+            quantity=20,
+            reorder_level=10,
+        )
+        url = reverse("product-detail", kwargs={"pk": product.pk})
+
+        # Update while staying above threshold -> No notification
+        with patch("inventory.notifications.send_low_stock_push_notification") as mock_notify:
+            res1 = self.client.patch(url, {"quantity": 15}, format="json")
+            self.assertEqual(res1.status_code, status.HTTP_200_OK)
+            mock_notify.assert_not_called()
+
+        # Update crossing from above threshold to at or below -> Triggers notification
+        with patch("inventory.notifications.send_low_stock_push_notification") as mock_notify:
+            res2 = self.client.patch(url, {"quantity": 8}, format="json")
+            self.assertEqual(res2.status_code, status.HTTP_200_OK)
+            mock_notify.assert_called_once()
+
+    def test_push_notification_exception_does_not_break_product_api(self):
+        from unittest.mock import patch
+        url = reverse("product-list-create")
+        payload = {
+            "name": "Matcha Tea",
+            "sku": "MATCHA-001",
+            "price": "22.00",
+            "quantity": 2,
+            "reorder_level": 5,
+        }
+        with patch("inventory.notifications.send_low_stock_push_notification", side_effect=RuntimeError("Network down")):
+            response = self.client.post(url, payload, format="json")
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+            self.assertEqual(response.data["name"], "Matcha Tea")
+
+    def test_notifications_format_and_invalid_token_skipping(self):
+        from unittest.mock import patch
+        from inventory.models import PushDevice
+        from inventory.notifications import send_low_stock_push_notification
+
+        PushDevice.objects.create(expo_push_token="InvalidTokenString", device_name="Bad Device")
+        PushDevice.objects.create(expo_push_token="ExponentPushToken[valid-test-token]", device_name="Good Device")
+
+        product_low = Product.objects.create(name="Green Tea", sku="TEA-01", price="5.00", quantity=3, reorder_level=5)
+        product_zero = Product.objects.create(name="Black Tea", sku="TEA-02", price="5.00", quantity=0, reorder_level=5)
+
+        with patch("requests.post") as mock_post:
+            mock_post.return_value.ok = True
+            mock_post.return_value.status_code = 200
+
+            count_low = send_low_stock_push_notification(product_low)
+            self.assertEqual(count_low, 1)
+            payload_low = mock_post.call_args[1]["json"]
+            self.assertEqual(len(payload_low), 1)
+            self.assertEqual(payload_low[0]["title"], "Low Stock Alert: Green Tea")
+            self.assertEqual(payload_low[0]["to"], "ExponentPushToken[valid-test-token]")
+
+            count_zero = send_low_stock_push_notification(product_zero)
+            self.assertEqual(count_zero, 1)
+            payload_zero = mock_post.call_args[1]["json"]
+            self.assertEqual(payload_zero[0]["title"], "Restock Needed: Black Tea")
+
 
 class DatabaseConfigurationResolutionTests(APITestCase):
     def test_default_fallback_mysql(self):

@@ -179,7 +179,7 @@ export default function HomeScreen() {
   // Sync OS notifications for alerts when products change
   useEffect(() => {
     if (products.length > 0) {
-      syncInventoryAlertNotificationsAsync(allAlerts);
+      syncInventoryAlertNotificationsAsync(products, allAlerts);
     }
   }, [products, allAlerts]);
 

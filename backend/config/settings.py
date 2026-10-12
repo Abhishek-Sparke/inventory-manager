@@ -1,6 +1,8 @@
 import os
+import sys
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 """
@@ -109,12 +111,115 @@ def get_database_config(env=None):
     """
     Builds the database configuration dictionary from environment variables.
     Supports:
-      1. Single DATABASE_URL (e.g. Supabase connection string)
-      2. Discrete environment variables (DB_ENGINE, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE)
-      3. Fallback to local MySQL for local development if PostgreSQL is not specified
+      1. Explicit isolated SQLite test database when DJANGO_TEST_MODE=true
+         (separate base NAME and disposable TEST.NAME: test_inventory_runner.sqlite3)
+      2. Single DATABASE_URL (e.g. Supabase connection string)
+      3. Discrete environment variables (DB_ENGINE, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE)
+      4. Fallback to local MySQL for local development if PostgreSQL is not specified
     """
     if env is None:
         env = os.environ
+
+    is_test_mode = env.get("DJANGO_TEST_MODE", "").strip().lower() in ("true", "1", "yes")
+    is_test_command = "test" in sys.argv and not any(arg in sys.argv for arg in ("--help", "-h"))
+
+    # Shield: Prevent test execution against live production Supabase or development MySQL
+    if is_test_command and not is_test_mode and (env is os.environ):
+        raise ImproperlyConfigured(
+            "Running tests against production Supabase or existing MySQL databases is blocked for safety. "
+            "Automated tests must explicitly run with DJANGO_TEST_MODE=true using an isolated disposable SQLite test database. "
+            "Existing production and development databases will never be modified, dropped, or recreated."
+        )
+
+    # Dedicated isolated SQLite test database override
+    if is_test_mode:
+        is_production = bool(
+            env.get("RENDER")
+            or env.get("RENDER_EXTERNAL_HOSTNAME")
+            or env.get("DJANGO_ENV", "").strip().lower() in ("production", "prod")
+            or env.get("ENVIRONMENT", "").strip().lower() in ("production", "prod")
+        )
+        if is_production:
+            raise ImproperlyConfigured(
+                "DJANGO_TEST_MODE cannot be enabled in a production environment (detected Render/production deployment). "
+                "Test mode is strictly reserved for isolated local test runs."
+            )
+
+        base_test_name = env.get("DJANGO_TEST_BASE_DB_NAME", "").strip() or "test_inventory_base.sqlite3"
+        runner_test_name = (
+            env.get("DJANGO_TEST_RUNNER_DB_NAME", "").strip()
+            or env.get("DJANGO_TEST_DB_NAME", "").strip()
+            or "test_inventory_runner.sqlite3"
+        )
+
+        base_path = Path(base_test_name)
+        if not base_path.is_absolute():
+            base_path = BASE_DIR / base_test_name
+
+        runner_path = Path(runner_test_name)
+        if not runner_path.is_absolute():
+            runner_path = BASE_DIR / runner_test_name
+
+        # Canonicalize paths to resolve any relative, symlink, or spelling differences
+        resolved_base = base_path.resolve()
+        resolved_runner = runner_path.resolve()
+
+        # Enforce distinct destinations so Django test runner creates/destroys runner_path, never base_path
+        if resolved_base == resolved_runner:
+            raise ImproperlyConfigured(
+                f"Resolved SQLite base path and test runner path cannot be the same file: '{resolved_runner}'. "
+                "Specify distinct paths so the disposable test runner file is completely isolated from the base database."
+            )
+
+        # Protect existing repository files, fixtures, environment files, and non-sqlite destinations
+        protected_files = {
+            (BASE_DIR / ".env").resolve(),
+            (BASE_DIR / ".env.example").resolve(),
+            (BASE_DIR / "stockflow_data.json").resolve(),
+            (BASE_DIR / "manage.py").resolve(),
+            (BASE_DIR / "requirements.txt").resolve(),
+        }
+        if resolved_runner in protected_files or resolved_base in protected_files:
+            raise ImproperlyConfigured(
+                f"Test database path '{resolved_runner}' points to a protected project file. "
+                "Test databases must be dedicated throwaway SQLite files (e.g. test_inventory_runner.sqlite3)."
+            )
+
+        # Reject any runner path referencing remote hosts, mysql, or postgres schemes/names
+        live_db_name = (env.get("DB_NAME", "") or env.get("MYSQL_NAME", "") or env.get("POSTGRES_NAME", "")).lower()
+        runner_name_lower = resolved_runner.name.lower()
+        if (
+            runner_name_lower in ("postgres", "inventory_db")
+            or (live_db_name and runner_name_lower == live_db_name)
+            or any(sub in str(resolved_runner).lower() for sub in ("supabase", "pooler"))
+            or resolved_runner.suffix.lower() not in (".sqlite3", ".db", ".sqlite")
+        ):
+            raise ImproperlyConfigured(
+                f"Test runner database path '{resolved_runner}' is invalid or targets a production/non-SQLite database name. "
+                "Test runner must target an isolated local SQLite file with a .sqlite3 or .db extension."
+            )
+
+        # Reject an existing test runner SQLite file by default rather than assuming it is disposable
+        if resolved_runner.exists():
+            raise ImproperlyConfigured(
+                f"Test runner SQLite file '{resolved_runner}' already exists on disk. "
+                "To prevent accidental clobbering or data loss, existing files are rejected by default. "
+                "Please configure a new, unused filename via DJANGO_TEST_RUNNER_DB_NAME (or safely remove the stale test artifact)."
+            )
+
+        return {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": str(resolved_base),
+            "USER": "",
+            "PASSWORD": "",
+            "HOST": "",
+            "PORT": "",
+            "CONN_MAX_AGE": 0,
+            "OPTIONS": {},
+            "TEST": {
+                "NAME": str(resolved_runner),
+            },
+        }
 
     database_url = env.get("DATABASE_URL", "").strip()
     db_engine_env = env.get("DB_ENGINE", "").strip().lower()
