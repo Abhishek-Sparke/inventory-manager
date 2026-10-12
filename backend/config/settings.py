@@ -65,6 +65,10 @@ INSTALLED_APPS = [
     "inventory",
 ]
 
+REST_FRAMEWORK = {
+    "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%SZ",
+}
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -285,4 +289,4 @@ else:
 CORS_ALLOW_ALL_ORIGINS = os.getenv(
     "CORS_ALLOW_ALL_ORIGINS",
     "True" if DEBUG else "False"
-).lower() in ("true", "1", "t", "yes")
+).lower() in ("true", "1", "t", "yes")

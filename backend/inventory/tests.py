@@ -69,6 +69,110 @@ class TaskAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertEqual(Task.objects.count(), 0)
 
+    def test_task_status_and_completion_synchronization(self):
+        url = reverse("task-list-create")
+        payload = {
+            "title": "Status Sync Task",
+            "status": "completed",
+            "priority": "low",
+        }
+        response = self.client.post(url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["is_completed"])
+        self.assertEqual(response.data["status"], "completed")
+
+        task_id = response.data["id"]
+        # Update is_completed to False -> status becomes pending
+        patch_res = self.client.patch(
+            reverse("task-detail", kwargs={"pk": task_id}),
+            {"is_completed": False},
+            format="json",
+        )
+        self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertFalse(patch_res.data["is_completed"])
+        self.assertEqual(patch_res.data["status"], "pending")
+
+    def test_task_end_time_validation(self):
+        url = reverse("task-list-create")
+        payload = {
+            "title": "Invalid End Time",
+            "scheduled_at": "2026-10-12T10:00:00Z",
+            "end_at": "2026-10-12T09:00:00Z",
+        }
+        response = self.client.post(url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("end_at", response.data)
+
+    def test_task_filtering_by_date_and_status(self):
+        Task.objects.create(
+            title="Today Task",
+            scheduled_at="2026-10-12T14:00:00Z",
+            status="pending",
+        )
+        Task.objects.create(
+            title="Tomorrow Task",
+            scheduled_at="2026-10-13T10:00:00Z",
+            status="completed",
+        )
+        url = reverse("task-list-create")
+
+        # Filter by date
+        res = self.client.get(f"{url}?date=2026-10-12")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        titles = [t["title"] for t in (res.data if isinstance(res.data, list) else res.data.get("results", []))]
+        self.assertIn("Today Task", titles)
+        self.assertNotIn("Tomorrow Task", titles)
+
+        # Filter by status
+        res_completed = self.client.get(f"{url}?status=completed")
+        titles_completed = [t["title"] for t in (res_completed.data if isinstance(res_completed.data, list) else res_completed.data.get("results", []))]
+        self.assertIn("Tomorrow Task", titles_completed)
+        self.assertNotIn("Today Task", titles_completed)
+
+
+class DailyProgressAPITests(APITestCase):
+    def test_create_and_fetch_daily_progress(self):
+        url = reverse("daily-progress-list-create")
+        payload = {
+            "date": "2026-10-12",
+            "description": "Finished stock audit for aisle 1 and aisle 2.",
+            "achievements": "Identified 3 low stock items.",
+            "blockers": "Barcode scanner battery died once.",
+            "next_steps": "Order replacement parts.",
+            "notes": "Verified inventory accuracy.",
+        }
+        response = self.client.post(url, payload, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["date"], "2026-10-12")
+        self.assertEqual(response.data["description"], payload["description"])
+
+        # Fetch by date endpoint
+        date_url = reverse("daily-progress-by-date", kwargs={"date": "2026-10-12"})
+        fetch_res = self.client.get(date_url)
+        self.assertEqual(fetch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(fetch_res.data["description"], payload["description"])
+
+    def test_idempotent_daily_progress_update(self):
+        url = reverse("daily-progress-list-create")
+        payload1 = {
+            "date": "2026-10-15",
+            "description": "Initial morning journal entry",
+        }
+        res1 = self.client.post(url, payload1, format="json")
+        self.assertEqual(res1.status_code, status.HTTP_201_CREATED)
+
+        # Subsequent POST to same date updates rather than errors
+        payload2 = {
+            "date": "2026-10-15",
+            "description": "Evening updated journal entry",
+            "achievements": "Completed all deliveries",
+        }
+        res2 = self.client.post(url, payload2, format="json")
+        self.assertEqual(res2.status_code, status.HTTP_200_OK)
+        self.assertEqual(res2.data["description"], "Evening updated journal entry")
+        self.assertEqual(res2.data["achievements"], "Completed all deliveries")
+
+
 
 class ProductAPIIntegrityTests(APITestCase):
     def test_existing_product_list(self):
