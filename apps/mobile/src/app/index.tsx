@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import {
@@ -21,6 +21,12 @@ import {
   NOTIFICATIONS_REGISTER_API_URL,
 } from '@/constants/api';
 import { isExpoGoClient } from '@/services/notifications';
+import {
+  evaluateProductAlerts,
+  syncInventoryAlertNotificationsAsync,
+  ProductAlert,
+} from '@/services/inventory-alerts';
+import { parseDateString, getLocalDateString } from '@/utils/timezone';
 
 type Product = {
   id: number;
@@ -153,6 +159,29 @@ export default function HomeScreen() {
     reorder_level: '10',
     expiry_date: '',
   });
+
+  // Configurable advance warning period for expiry (default: 7 days)
+  const [warningDays, setWarningDays] = useState<number>(7);
+  const [alertFilter, setAlertFilter] = useState<'all' | 'restock' | 'expiry'>('all');
+
+  // Compute live restock and expiry alerts
+  const { restockAlerts, expiryAlerts, allAlerts } = useMemo(
+    () => evaluateProductAlerts(products, warningDays),
+    [products, warningDays]
+  );
+
+  const displayedAlerts = useMemo(() => {
+    if (alertFilter === 'restock') return restockAlerts;
+    if (alertFilter === 'expiry') return expiryAlerts;
+    return allAlerts;
+  }, [alertFilter, restockAlerts, expiryAlerts, allAlerts]);
+
+  // Sync OS notifications for alerts when products change
+  useEffect(() => {
+    if (products.length > 0) {
+      syncInventoryAlertNotificationsAsync(allAlerts);
+    }
+  }, [products, allAlerts]);
 
 
 
@@ -558,6 +587,159 @@ export default function HomeScreen() {
             </View>
           </View>
 
+          {/* Inventory Expiry & Restock Alerts Banner Card */}
+          <View style={styles.alertsContainer}>
+            <View style={styles.alertsHeader}>
+              <View>
+                <Text style={styles.alertsSectionTitle}>
+                  ⚠️ Inventory Alerts ({allAlerts.length})
+                </Text>
+                <Text style={styles.alertsSectionSubtitle}>
+                  {restockAlerts.length} restock needed · {expiryAlerts.length} expiry warnings
+                </Text>
+              </View>
+
+              {/* Advance Warning Period Selector */}
+              <View style={styles.warningLeadRow}>
+                <Text style={styles.warningLeadLabel}>Expiry lead:</Text>
+                {[3, 7, 14, 30].map(days => (
+                  <Pressable
+                    key={days}
+                    style={[
+                      styles.leadPill,
+                      warningDays === days && styles.leadPillActive,
+                    ]}
+                    onPress={() => setWarningDays(days)}
+                  >
+                    <Text
+                      style={[
+                        styles.leadPillText,
+                        warningDays === days && styles.leadPillTextActive,
+                      ]}
+                    >
+                      {days}d
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {/* Alert Filter Chips */}
+            <View style={styles.alertFilterChipsRow}>
+              <Pressable
+                style={[
+                  styles.alertFilterChip,
+                  alertFilter === 'all' && styles.alertFilterChipActive,
+                ]}
+                onPress={() => setAlertFilter('all')}
+              >
+                <Text
+                  style={[
+                    styles.alertFilterChipText,
+                    alertFilter === 'all' && styles.alertFilterChipTextActive,
+                  ]}
+                >
+                  All ({allAlerts.length})
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.alertFilterChip,
+                  alertFilter === 'restock' && styles.alertFilterChipActive,
+                ]}
+                onPress={() => setAlertFilter('restock')}
+              >
+                <Text
+                  style={[
+                    styles.alertFilterChipText,
+                    alertFilter === 'restock' && styles.alertFilterChipTextActive,
+                  ]}
+                >
+                  Low Stock ({restockAlerts.length})
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.alertFilterChip,
+                  alertFilter === 'expiry' && styles.alertFilterChipActive,
+                ]}
+                onPress={() => setAlertFilter('expiry')}
+              >
+                <Text
+                  style={[
+                    styles.alertFilterChipText,
+                    alertFilter === 'expiry' && styles.alertFilterChipTextActive,
+                  ]}
+                >
+                  Expiry ({expiryAlerts.length})
+                </Text>
+              </Pressable>
+            </View>
+
+            {/* Alerts List */}
+            {displayedAlerts.length === 0 ? (
+              <View style={styles.noAlertsCard}>
+                <Text style={styles.noAlertsText}>
+                  ✓ All stock levels and expiry dates are healthy.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.alertCardsList}>
+                {displayedAlerts.map(alert => (
+                  <View
+                    key={alert.id}
+                    style={[
+                      styles.alertItemCard,
+                      alert.severity === 'critical'
+                        ? styles.alertItemCritical
+                        : alert.severity === 'warning'
+                          ? styles.alertItemWarning
+                          : styles.alertItemInfo,
+                    ]}
+                  >
+                    <View style={styles.alertItemHeader}>
+                      <Text
+                        style={[
+                          styles.alertItemBadge,
+                          alert.type === 'expired'
+                            ? styles.badgeExpired
+                            : alert.type === 'expiring_soon'
+                              ? styles.badgeExpiringSoon
+                              : styles.badgeRestockAlert,
+                        ]}
+                      >
+                        {alert.type === 'expired'
+                          ? 'EXPIRED'
+                          : alert.type === 'expiring_soon'
+                            ? 'EXPIRING SOON'
+                            : 'RESTOCK'}
+                      </Text>
+                      <Text style={styles.alertProductSku}>{alert.sku}</Text>
+                    </View>
+
+                    <Text style={styles.alertItemTitle}>{alert.title}</Text>
+                    <Text style={styles.alertItemMessage}>{alert.message}</Text>
+
+                    {alert.type === 'restock' && (
+                      <Pressable
+                        style={styles.alertRestockBtn}
+                        onPress={() => {
+                          const targetProd = products.find(p => p.id === alert.productId);
+                          if (targetProd) {
+                            setRestockingProduct(targetProd);
+                            setRestockQuantity('10');
+                          }
+                        }}
+                      >
+                        <Text style={styles.alertRestockBtnText}>+ Quick Restock</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+
           <Text style={styles.sectionTitle}>Product Inventory</Text>
           <Pressable
             style={styles.addButton}
@@ -672,14 +854,45 @@ export default function HomeScreen() {
               <View style={styles.productCard} key={product.id}>
                 <View style={styles.productTop}>
                   <Text style={styles.productName}>{product.name}</Text>
-                  <Text
-                    style={[
-                      styles.badge,
-                      isLow ? styles.lowBadge : styles.stockBadge,
-                    ]}
-                  >
-                    {isLow ? 'Low Stock' : 'In Stock'}
-                  </Text>
+                  <View style={styles.productBadgesWrap}>
+                    <Text
+                      style={[
+                        styles.badge,
+                        isLow ? styles.lowBadge : styles.stockBadge,
+                      ]}
+                    >
+                      {isLow ? 'Low Stock' : 'In Stock'}
+                    </Text>
+
+                    {/* Expiry Badge if product has expiry_date */}
+                    {Boolean(product.expiry_date) && (() => {
+                      const todayStr = getLocalDateString();
+                      const { year, month, day } = parseDateString(product.expiry_date || '');
+                      const expD = new Date(year, month - 1, day);
+                      const todayD = new Date(todayStr + 'T00:00:00');
+                      const diffDays = Math.ceil((expD.getTime() - todayD.getTime()) / (1000 * 60 * 60 * 24));
+
+                      if (diffDays < 0) {
+                        return (
+                          <Text style={[styles.badge, styles.badgeExpired]}>
+                            Expired ({product.expiry_date})
+                          </Text>
+                        );
+                      }
+                      if (diffDays <= warningDays) {
+                        return (
+                          <Text style={[styles.badge, styles.badgeExpiringSoon]}>
+                            Exp in {diffDays}d ({product.expiry_date})
+                          </Text>
+                        );
+                      }
+                      return (
+                        <Text style={[styles.badge, styles.badgeNormalExpiry]}>
+                          Exp: {product.expiry_date}
+                        </Text>
+                      );
+                    })()}
+                  </View>
                 </View>
 
 
@@ -950,5 +1163,174 @@ const styles = StyleSheet.create({
     color: '#DC2626',
     fontWeight: '700',
   },
-
+  // Alerts Styles
+  alertsContainer: {
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 18,
+    marginBottom: 16,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  alertsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 10,
+  },
+  alertsSectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  alertsSectionSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  warningLeadRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  warningLeadLabel: {
+    fontSize: 10,
+    color: '#64748B',
+  },
+  leadPill: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#F1F5F9',
+  },
+  leadPillActive: {
+    backgroundColor: '#4263EB',
+  },
+  leadPillText: {
+    fontSize: 10,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  leadPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  alertFilterChipsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 10,
+  },
+  alertFilterChip: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    backgroundColor: '#F1F5F9',
+  },
+  alertFilterChipActive: {
+    backgroundColor: '#E0E7FF',
+    borderWidth: 1,
+    borderColor: '#4263EB',
+  },
+  alertFilterChipText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  alertFilterChipTextActive: {
+    color: '#4263EB',
+    fontWeight: '700',
+  },
+  noAlertsCard: {
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  noAlertsText: {
+    color: '#059669',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  alertCardsList: {
+    gap: 8,
+  },
+  alertItemCard: {
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  alertItemCritical: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  alertItemWarning: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  alertItemInfo: {
+    backgroundColor: '#F0F9FF',
+    borderColor: '#BAE6FD',
+  },
+  alertItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  alertItemBadge: {
+    fontSize: 10,
+    fontWeight: '800',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  badgeExpired: {
+    backgroundColor: '#FEE2E2',
+    color: '#B91C1C',
+  },
+  badgeExpiringSoon: {
+    backgroundColor: '#FEF3C7',
+    color: '#92400E',
+  },
+  badgeRestockAlert: {
+    backgroundColor: '#FEE2E2',
+    color: '#B91C1C',
+  },
+  badgeNormalExpiry: {
+    backgroundColor: '#F1F5F9',
+    color: '#475569',
+  },
+  alertProductSku: {
+    fontSize: 10,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  alertItemTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+    marginBottom: 2,
+  },
+  alertItemMessage: {
+    fontSize: 11,
+    color: '#475569',
+  },
+  alertRestockBtn: {
+    backgroundColor: '#4263EB',
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  alertRestockBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  productBadgesWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    alignItems: 'center',
+  },
 });

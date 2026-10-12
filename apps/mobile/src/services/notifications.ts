@@ -267,3 +267,42 @@ export async function getActiveReminderTaskIdsAsync(): Promise<Set<number>> {
     return new Set();
   }
 }
+
+/**
+ * Rebuild local notifications for all pending future tasks that have reminders enabled.
+ * Call on app startup to restore alarms after device reboot or app restart.
+ */
+export async function rescheduleAllPendingTaskRemindersAsync(
+  tasks: Array<{
+    id: number;
+    title: string;
+    description?: string;
+    scheduled_at: string | null;
+    priority?: string;
+    is_completed?: boolean;
+    reminder_minutes?: number | null;
+  }>
+): Promise<number> {
+  const Notifications = getNotifications();
+  if (!Notifications) return 0;
+
+  const nowMs = Date.now();
+  let count = 0;
+
+  for (const task of tasks) {
+    if (task.is_completed || !task.scheduled_at) continue;
+
+    const taskDate = new Date(task.scheduled_at);
+    if (isNaN(taskDate.getTime())) continue;
+
+    const offset = task.reminder_minutes ?? 0;
+    const triggerMs = taskDate.getTime() - offset * 60 * 1000;
+
+    if (triggerMs > nowMs) {
+      const res = await scheduleTaskReminderAsync(task, offset);
+      if (res.success) count++;
+    }
+  }
+
+  return count;
+}
