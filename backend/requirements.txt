@@ -1,0 +1,30 @@
+# StockFlow Django Backend Dependencies
+
+# Production WSGI Server & Static Files (Render Deployment)
+gunicorn==26.2.0
+whitenoise==6.12.0
+
+# Core Django & REST Framework
+Django==6.1.2
+djangorestframework==3.18.3
+django-cors-headers==4.9.0
+python-dotenv==1.2.4
+
+# Database Drivers
+# PostgreSQL / Supabase Driver (Psycopg 3 with pre-compiled C extensions)
+psycopg[binary]==3.3.6
+
+# MySQL Driver (Local Development Fallback)
+mysqlclient==2.3.0
+
+# HTTP & Networking
+requests==2.34.2
+urllib3==2.8.0
+certifi==2026.7.22
+charset-normalizer==3.5.2
+idna==3.20
+
+# Supporting Libraries
+asgiref==3.12.1
+sqlparse==0.6.0
+tzdata==2026.5

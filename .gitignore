@@ -1,0 +1,31 @@
+# Environment secrets
+.env
+.env.*
+!.env.example
+*.env
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.sqlite3
+staticfiles/
+backend/staticfiles/
+
+# Node / JS
+node_modules/
+dist/
+.expo/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+# Local database backups and exports
+*.sql
+stockflow_data.json

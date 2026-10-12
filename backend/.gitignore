@@ -1,0 +1,29 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.env
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Django local databases & logs
+*.sqlite3
+*.sqlite3-journal
+*.log
+staticfiles/
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
