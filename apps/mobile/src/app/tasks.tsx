@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   View,
   Text,
@@ -7,7 +8,6 @@ import {
   StatusBar,
   ActivityIndicator,
   RefreshControl,
-  TextInput,
   Pressable,
   Alert,
   Platform,
@@ -20,7 +20,20 @@ import {
   getActiveReminderTaskIdsAsync,
   rescheduleAllPendingTaskRemindersAsync,
 } from '@/services/notifications';
+import {
+  subscribeToTaskChanges,
+  notifyTaskChange,
+  shouldFetchTasks,
+  markTasksFetched,
+  setFetchInProgress,
+} from '@/services/task-sync';
 import { syncWidgetDataAsync } from '@/services/widget-data';
+import {
+  fetchDailyProgress,
+  fetchDailyProgressList,
+  saveDailyProgress,
+  DailyProgress,
+} from '@/services/daily-progress';
 import {
   getLocalDateString,
   getTaskLocalDateString,
@@ -30,73 +43,91 @@ import {
   buildScheduledIsoString,
   formatScheduledDisplay,
   isTaskOverdue,
+  sortTasksByPriorityAndTime,
+  getDateRangeDays,
 } from '@/utils/timezone';
 
-// Re-export timezone helpers so existing imports continue working without regression
+import { Task, TaskPriority, TaskStatus, UnifiedViewTab } from '@/components/tasks/types';
+import { TaskCard } from '@/components/tasks/TaskCard';
+import { TaskModal, TaskSavePayload } from '@/components/tasks/TaskModal';
+import { TaskProgressCard } from '@/components/tasks/TaskProgressCard';
+import { CalendarSection } from '@/components/tasks/CalendarSection';
+
+// Re-export timezone helpers and task types for backward compatibility
 export {
   getLocalDateString,
   parseTimeString,
   parseDateString,
   buildScheduledIsoString,
   formatScheduledDisplay,
+  sortTasksByPriorityAndTime,
 };
-
-export type TaskPriority = 'low' | 'medium' | 'high';
-export type TaskStatus = 'pending' | 'in_progress' | 'completed';
-
-export type Task = {
-  id: number;
-  title: string;
-  description: string;
-  scheduled_at: string | null;
-  end_at?: string | null;
-  priority: TaskPriority;
-  status?: TaskStatus;
-  is_completed: boolean;
-  notes?: string;
-  reminder_minutes?: number | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type FilterTab = 'today' | 'upcoming' | 'all';
+export type { Task, TaskPriority, TaskStatus };
 
 export default function TasksScreen() {
+  const params = useLocalSearchParams<{ view?: string }>();
+  const [activeTab, setActiveTab] = useState<UnifiedViewTab>(
+    params.view === 'calendar' ? 'calendar' : 'today'
+  );
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState<FilterTab>('today');
-  const [showForm, setShowForm] = useState(false);
-  const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null);
+
+  // Daily Progress Map & Current Selected Date Progress
+  const [dailyProgressMap, setDailyProgressMap] = useState<Record<string, DailyProgress>>({});
+  const [selectedDate, setSelectedDate] = useState(() => getLocalDateString());
+  const [currentProgress, setCurrentProgress] = useState<DailyProgress>({
+    date: getLocalDateString(),
+    description: '',
+    achievements: '',
+    blockers: '',
+    next_steps: '',
+    notes: '',
+  });
+  const [savingProgress, setSavingProgress] = useState(false);
+  const [progressSaveSuccess, setProgressSaveSuccess] = useState(false);
+
+  // Calendar Date Range Selection State
+  const [rangeStart, setRangeStart] = useState<string | null>(null);
+  const [rangeEnd, setRangeEnd] = useState<string | null>(null);
 
   // Active reminder IDs tracked in OS notification queue
   const [reminderTaskIds, setReminderTaskIds] = useState<Set<number>>(new Set());
 
-  // Form state
-  const [formTitle, setFormTitle] = useState('');
-  const [formDescription, setFormDescription] = useState('');
-  const [formPriority, setFormPriority] = useState<TaskPriority>('medium');
-  const [formDate, setFormDate] = useState(() => getLocalDateString());
-  const [formTime, setFormTime] = useState('09:00');
-  const [formReminderEnabled, setFormReminderEnabled] = useState(true);
-  const [formReminderOffset, setFormReminderOffset] = useState<number>(0);
+  // Shared Add / Edit Task Modal State
+  const [taskModalVisible, setTaskModalVisible] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [modalInitialDate, setModalInitialDate] = useState(() => getLocalDateString());
+  const [savingTask, setSavingTask] = useState(false);
+  const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null);
 
-  const loadTasks = useCallback(async (pullToRefresh = false) => {
+  // Switch to calendar if query param specified
+  useEffect(() => {
+    if (params.view === 'calendar') {
+      setActiveTab('calendar');
+    }
+  }, [params.view]);
+
+  // Load Tasks and Daily Progress
+  const loadData = useCallback(async (pullToRefresh = false, force = false) => {
+    if (!force && !pullToRefresh && !shouldFetchTasks(1500)) {
+      return;
+    }
+    setFetchInProgress(true);
     if (pullToRefresh) {
       setRefreshing(true);
-    } else {
+    } else if (tasks.length === 0) {
       setLoading(true);
     }
 
     setError('');
-
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     try {
+      // 1. Fetch tasks from backend
       const response = await fetch(TASKS_API_URL, {
         method: 'GET',
         headers: { Accept: 'application/json' },
@@ -115,12 +146,21 @@ export default function TasksScreen() {
           : [];
 
       setTasks(taskList);
+      markTasksFetched();
 
-      // Sync active scheduled notifications from local device
+      // 2. Load daily progress entries
+      const progressList = await fetchDailyProgressList();
+      const pMap: Record<string, DailyProgress> = {};
+      for (const item of progressList) {
+        pMap[item.date] = item;
+      }
+      setDailyProgressMap(pMap);
+
+      // 3. Sync active scheduled notifications from local device
       const activeReminders = await getActiveReminderTaskIdsAsync();
       setReminderTaskIds(activeReminders);
 
-      // Restore alarms if needed for pending future tasks
+      // 4. Restore alarms if needed for pending future tasks
       await rescheduleAllPendingTaskRemindersAsync(taskList);
     } catch (err) {
       const message =
@@ -132,22 +172,81 @@ export default function TasksScreen() {
       setError(message);
     } finally {
       clearTimeout(timeoutId);
+      setFetchInProgress(false);
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [tasks.length]);
 
   useEffect(() => {
-    loadTasks();
-  }, [loadTasks]);
+    loadData();
+  }, [loadData]);
 
+  // Immediately reload when tasks are modified elsewhere
+  useEffect(() => {
+    const unsubscribe = subscribeToTaskChanges(() => {
+      loadData(false, true);
+    });
+    return unsubscribe;
+  }, [loadData]);
+
+  // Refresh whenever screen gains focus
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
+  );
+
+  // Sync widget snapshot on tasks update
   useEffect(() => {
     if (tasks.length > 0) {
       syncWidgetDataAsync(tasks);
     }
   }, [tasks]);
 
-  // Tab Filtering, Timezone Grouping & Progress Metrics
+  // Load daily progress for selected date
+  useEffect(() => {
+    async function loadSelectedProgress() {
+      if (dailyProgressMap[selectedDate]) {
+        setCurrentProgress(dailyProgressMap[selectedDate]);
+      } else {
+        const fetched = await fetchDailyProgress(selectedDate);
+        if (fetched && fetched.description !== undefined) {
+          setCurrentProgress(fetched);
+          setDailyProgressMap(prev => ({ ...prev, [selectedDate]: fetched }));
+        } else {
+          setCurrentProgress({
+            date: selectedDate,
+            description: '',
+            achievements: '',
+            blockers: '',
+            next_steps: '',
+            notes: '',
+          });
+        }
+      }
+      setProgressSaveSuccess(false);
+    }
+    loadSelectedProgress();
+  }, [selectedDate, dailyProgressMap]);
+
+  // Group tasks by their device-local calendar date
+  const tasksByLocalDate = useMemo(() => {
+    const map: Record<string, Task[]> = {};
+    for (const task of tasks) {
+      const localDate = getTaskLocalDateString(task.scheduled_at);
+      if (localDate) {
+        if (!map[localDate]) map[localDate] = [];
+        map[localDate].push(task);
+      }
+    }
+    for (const dateKey in map) {
+      map[dateKey] = sortTasksByPriorityAndTime(map[dateKey]);
+    }
+    return map;
+  }, [tasks]);
+
+  // Computed metrics and view lists
   const {
     todayTasks,
     overdueTasks,
@@ -180,7 +279,7 @@ export default function TasksScreen() {
       -1
     ).getTime();
 
-    // Start of week (Monday 00:00:00) and end of week (Sunday 23:59:59.999)
+    // Monday to Sunday of current week
     const currentDayOfWeek = now.getDay();
     const distanceToMonday = (currentDayOfWeek + 6) % 7;
     const startOfWeek = new Date(
@@ -259,10 +358,10 @@ export default function TasksScreen() {
       weekTotalCount > 0 ? Math.round((weekCompletedCount / weekTotalCount) * 100) : 0;
 
     return {
-      todayTasks: todayList,
-      overdueTasks: overdueList,
-      upcomingTasks: upcomingList,
-      allTasks: tasks,
+      todayTasks: sortTasksByPriorityAndTime(todayList),
+      overdueTasks: sortTasksByPriorityAndTime(overdueList),
+      upcomingTasks: sortTasksByPriorityAndTime(upcomingList),
+      allTasks: sortTasksByPriorityAndTime(tasks),
       totalTasks: totalTasksCount,
       totalCompleted: completed,
       overallPercent: overallPercentage,
@@ -277,16 +376,29 @@ export default function TasksScreen() {
     };
   }, [tasks]);
 
+  // Tasks to display in standard list views
   const displayedTasks = useMemo(() => {
     if (activeTab === 'today') return todayTasks;
     if (activeTab === 'upcoming') return upcomingTasks;
-    return allTasks;
+    if (activeTab === 'all') return allTasks;
+    return [];
   }, [activeTab, todayTasks, upcomingTasks, allTasks]);
 
-  // Actions
+  // Active range days
+  const activeRangeDays = useMemo(() => {
+    if (rangeStart && rangeEnd) {
+      return getDateRangeDays(rangeStart, rangeEnd);
+    }
+    if (rangeStart) {
+      return [rangeStart];
+    }
+    return [];
+  }, [rangeStart, rangeEnd]);
+
+  // Action: Toggle Task Completion
   async function handleToggleTask(task: Task) {
     const targetStatus = !task.is_completed;
-    const targetStatusStr = targetStatus ? 'completed' : 'pending';
+    const targetStatusStr: TaskStatus = targetStatus ? 'completed' : 'pending';
 
     // Optimistic update
     setTasks(prev =>
@@ -297,7 +409,7 @@ export default function TasksScreen() {
       )
     );
 
-    // Cancel or reschedule reminder according to completion status
+    // Cancel or reschedule reminder
     if (targetStatus) {
       await cancelTaskReminderAsync(task.id);
       setReminderTaskIds(prev => {
@@ -315,7 +427,7 @@ export default function TasksScreen() {
     try {
       const response = await fetch(`${TASKS_API_URL}${task.id}/`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ is_completed: targetStatus, status: targetStatusStr }),
       });
 
@@ -325,6 +437,7 @@ export default function TasksScreen() {
 
       const updated = await response.json();
       setTasks(prev => prev.map(t => (t.id === task.id ? updated : t)));
+      notifyTaskChange();
     } catch (err) {
       // Revert on error
       setTasks(prev =>
@@ -341,6 +454,7 @@ export default function TasksScreen() {
     }
   }
 
+  // Action: Delete Task
   async function performDelete(task: Task) {
     const deleteUrl = `${TASKS_API_URL.replace(/\/$/, '')}/${task.id}/`;
     setDeletingTaskId(task.id);
@@ -361,6 +475,7 @@ export default function TasksScreen() {
       }
 
       setTasks(prev => prev.filter(t => t.id !== task.id));
+      notifyTaskChange();
       await cancelTaskReminderAsync(task.id);
       setReminderTaskIds(prev => {
         const next = new Set(prev);
@@ -403,6 +518,7 @@ export default function TasksScreen() {
     }
   }
 
+  // Action: Toggle Reminder
   async function handleToggleReminder(task: Task) {
     if (task.is_completed) {
       Alert.alert('Task Completed', 'Cannot set reminders for completed tasks.');
@@ -446,79 +562,63 @@ export default function TasksScreen() {
     }
   }
 
-  // Open edit task modal
-  function startEditingTask(task: Task) {
-    setEditingTask(task);
-    setFormTitle(task.title);
-    setFormDescription(task.description || '');
-    setFormPriority(task.priority || 'medium');
-
-    if (task.scheduled_at) {
-      const d = new Date(task.scheduled_at);
-      setFormDate(getLocalDateString(d));
-      setFormTime(formatLocalTime(d)); // exact local hour and minute (e.g. 5:48 PM)
-    } else {
-      setFormDate(getLocalDateString());
-      setFormTime('09:00');
-    }
-
-    setFormReminderEnabled(reminderTaskIds.has(task.id));
-    setFormReminderOffset(task.reminder_minutes ?? 0);
-    setShowForm(true);
-  }
-
-  function startNewTask() {
+  // Action: Open Shared Task Modal
+  function openCreateTaskModal(targetDate?: string) {
     setEditingTask(null);
-    setFormTitle('');
-    setFormDescription('');
-    setFormPriority('medium');
-    setFormDate(getLocalDateString());
-    setFormTime('09:00');
-    setFormReminderEnabled(true);
-    setFormReminderOffset(0);
-    setShowForm(true);
+    setModalInitialDate(targetDate || (activeTab === 'calendar' ? selectedDate : getLocalDateString()));
+    setTaskModalVisible(true);
   }
 
-  async function handleSaveTask() {
-    if (!formTitle.trim()) {
-      Alert.alert('Required field', 'Please enter a task title.');
-      return;
-    }
+  function openEditTaskModal(task: Task) {
+    setEditingTask(task);
+    setModalInitialDate(
+      task.scheduled_at ? getLocalDateString(new Date(task.scheduled_at)) : getLocalDateString()
+    );
+    setTaskModalVisible(true);
+  }
 
-    setSaving(true);
-
+  // Action: Save Task (Shared Create / Update)
+  async function handleSaveTask(payload: TaskSavePayload) {
+    setSavingTask(true);
     try {
-      // Build local date object with exact minute precision and convert to ISO string
-      const isoTimestamp = buildScheduledIsoString(formDate, formTime);
+      const scheduledIso = buildScheduledIsoString(payload.date, payload.startTime);
+      const endIso = payload.endTime
+        ? buildScheduledIsoString(payload.date, payload.endTime)
+        : null;
 
       if (editingTask) {
         // UPDATE existing task
-        const payload = {
-          title: formTitle.trim(),
-          description: formDescription.trim(),
-          priority: formPriority,
-          scheduled_at: isoTimestamp,
-          reminder_minutes: formReminderEnabled ? formReminderOffset : null,
+        const bodyPayload = {
+          title: payload.title,
+          description: payload.description,
+          priority: payload.priority,
+          status: payload.status,
+          is_completed: payload.status === 'completed',
+          scheduled_at: scheduledIso,
+          end_at: endIso,
+          notes: payload.notes,
+          reminder_minutes: payload.reminderEnabled ? payload.reminderOffset : null,
         };
 
-        const response = await fetch(`${TASKS_API_URL}${editingTask.id}/`, {
+        const res = await fetch(`${TASKS_API_URL}${editingTask.id}/`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(bodyPayload),
         });
 
-        if (!response.ok) {
-          const errData = await response.json();
+        if (!res.ok) {
+          const errData = await res.json();
           throw new Error(JSON.stringify(errData));
         }
 
-        const updated: Task = await response.json();
+        const updated: Task = await res.json();
         setTasks(prev => prev.map(t => (t.id === updated.id ? updated : t)));
+        notifyTaskChange();
 
-        // Handle reminder update
-        if (formReminderEnabled && updated.scheduled_at && !updated.is_completed) {
-          const scheduleResult = await scheduleTaskReminderAsync(updated, formReminderOffset);
-          if (scheduleResult.success) {
+        // Update reminder
+        if (payload.reminderEnabled && updated.scheduled_at && !updated.is_completed) {
+          const sRes = await scheduleTaskReminderAsync(updated, payload.reminderOffset);
+          if (sRes.success) {
             setReminderTaskIds(prev => new Set(prev).add(updated.id));
           }
         } else {
@@ -530,101 +630,129 @@ export default function TasksScreen() {
           });
         }
 
-        setShowForm(false);
+        setTaskModalVisible(false);
         setEditingTask(null);
-        Alert.alert('Task Updated', `Task updated successfully! Preserved time: ${formTime}`);
+        Alert.alert('Task Updated', `Task updated successfully! Preserved time: ${payload.startTime}`);
       } else {
-        // CREATE new task
-        const payload = {
-          title: formTitle.trim(),
-          description: formDescription.trim(),
-          priority: formPriority,
-          scheduled_at: isoTimestamp,
-          is_completed: false,
-          reminder_minutes: formReminderEnabled ? formReminderOffset : null,
-        };
+        // CREATE new task(s)
+        const targetDates =
+          payload.scheduleAcrossRange && activeRangeDays.length > 1
+            ? activeRangeDays
+            : [payload.date];
 
-        const response = await fetch(TASKS_API_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify(payload),
-        });
+        const createdItems: Task[] = [];
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          const msg = Object.entries(errorData)
-            .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-            .join('\n');
-          throw new Error(msg || `Server returned ${response.status}`);
-        }
+        for (const dateItem of targetDates) {
+          const itemScheduledIso = buildScheduledIsoString(dateItem, payload.startTime);
+          const itemEndIso = payload.endTime
+            ? buildScheduledIsoString(dateItem, payload.endTime)
+            : null;
 
-        const created: Task = await response.json();
-        setTasks(prev => [created, ...prev]);
+          const bodyPayload = {
+            title: payload.title,
+            description: payload.description,
+            priority: payload.priority,
+            status: payload.status,
+            is_completed: payload.status === 'completed',
+            scheduled_at: itemScheduledIso,
+            end_at: itemEndIso,
+            notes: payload.notes,
+            reminder_minutes: payload.reminderEnabled ? payload.reminderOffset : null,
+          };
 
-        // Schedule local notification if enabled
-        let reminderInfo = '';
-        if (formReminderEnabled && created.scheduled_at) {
-          const scheduleResult = await scheduleTaskReminderAsync(created, formReminderOffset);
-          if (scheduleResult.success) {
-            setReminderTaskIds(prev => new Set(prev).add(created.id));
-            const timeDisplay = formatLocalTime(scheduleResult.triggerDate);
-            reminderInfo = `\n\n🔔 Local reminder set for ${timeDisplay}!`;
-          } else if (scheduleResult.reason === 'past') {
-            reminderInfo = '\n\n⚠️ Reminder skipped: the chosen time has already passed.';
-          } else if (scheduleResult.reason === 'permission_denied') {
-            reminderInfo = '\n\n⚠️ Reminder skipped: notification permission not granted.';
-          } else if (scheduleResult.reason === 'platform_unsupported') {
-            reminderInfo =
-              '\n\nℹ️ Note: Native notifications require a standalone APK or dev build (skipped in Expo Go).';
+          const res = await fetch(TASKS_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify(bodyPayload),
+          });
+
+          if (!res.ok) {
+            const errData = await res.json();
+            throw new Error(JSON.stringify(errData));
+          }
+
+          const created: Task = await res.json();
+          createdItems.push(created);
+
+          if (payload.reminderEnabled && created.scheduled_at && !created.is_completed) {
+            const sRes = await scheduleTaskReminderAsync(created, payload.reminderOffset);
+            if (sRes.success) {
+              setReminderTaskIds(prev => new Set(prev).add(created.id));
+            }
           }
         }
 
-        // Reset form
-        setFormTitle('');
-        setFormDescription('');
-        setFormPriority('medium');
-        setFormDate(getLocalDateString());
-        setFormTime('09:00');
-        setFormReminderEnabled(true);
-        setFormReminderOffset(0);
-        setShowForm(false);
+        setTasks(prev => [...createdItems, ...prev]);
+        notifyTaskChange();
+        setTaskModalVisible(false);
 
-        Alert.alert('Task Created', `Task added successfully!${reminderInfo}`);
+        Alert.alert(
+          'Task Created',
+          createdItems.length > 1
+            ? `Scheduled across ${createdItems.length} selected dates successfully!`
+            : 'Task added successfully!'
+        );
       }
     } catch (err) {
       Alert.alert('Error', err instanceof Error ? err.message : 'Could not save task.');
     } finally {
-      setSaving(false);
+      setSavingTask(false);
     }
   }
 
-  // Quick Date Helpers
-  function setDatePreset(daysFromNow: number, timeStr = '09:00') {
-    const d = new Date();
-    d.setDate(d.getDate() + daysFromNow);
-    setFormDate(getLocalDateString(d));
-    setFormTime(timeStr);
+  // Action: Save Daily Progress
+  async function handleSaveDailyProgress() {
+    setSavingProgress(true);
+    setProgressSaveSuccess(false);
+
+    try {
+      const saved = await saveDailyProgress({
+        ...currentProgress,
+        date: selectedDate,
+      });
+
+      setCurrentProgress(saved);
+      setDailyProgressMap(prev => ({ ...prev, [selectedDate]: saved }));
+      setProgressSaveSuccess(true);
+      setTimeout(() => setProgressSaveSuccess(false), 3000);
+    } catch (err) {
+      Alert.alert('Error', err instanceof Error ? err.message : 'Could not save progress.');
+    } finally {
+      setSavingProgress(false);
+    }
   }
 
   return (
     <ScrollView
       style={styles.screen}
+      contentContainerStyle={styles.screenContent}
+      keyboardShouldPersistTaps="handled"
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={() => loadTasks(true)} />
+        <RefreshControl refreshing={refreshing} onRefresh={() => loadData(true)} />
       }
     >
       <StatusBar barStyle="light-content" backgroundColor="#172033" />
 
-      {/* Header */}
+      {/* Top Header */}
       <View style={styles.header}>
-        <Text style={styles.logo}>S</Text>
-        <View>
-          <Text style={styles.brand}>StockFlow</Text>
-          <Text style={styles.subtitle}>Task & Workflow Management</Text>
+        <View style={styles.headerBrandRow}>
+          <Text style={styles.logo}>S</Text>
+          <View>
+            <Text style={styles.brand}>StockFlow</Text>
+            <Text style={styles.subtitle}>Task & Calendar Management</Text>
+          </View>
         </View>
+
+        <Pressable
+          style={styles.headerAddBtn}
+          onPress={() => openCreateTaskModal()}
+          accessibilityLabel="Add New Task"
+        >
+          <Text style={styles.headerAddBtnText}>+ New Task</Text>
+        </Pressable>
       </View>
 
-      {/* Welcome / Dashboard Section */}
+      {/* Welcome / Summary Row */}
       <View style={styles.welcome}>
         <View style={styles.titleRow}>
           <View>
@@ -632,381 +760,35 @@ export default function TasksScreen() {
             <Text style={styles.description}>
               {pendingCount === 0
                 ? 'All tasks completed! Great work.'
-                : `${pendingCount} pending task${pendingCount === 1 ? '' : 's'} to complete.`}
+                : `${pendingCount} pending task${pendingCount === 1 ? '' : 's'} across workflows.`}
             </Text>
           </View>
-          <Pressable
-            style={styles.primaryButton}
-            onPress={() => {
-              if (showForm) {
-                setShowForm(false);
-                setEditingTask(null);
-              } else {
-                startNewTask();
-              }
-            }}
-          >
-            <Text style={styles.primaryButtonText}>
-              {showForm ? 'Cancel' : '+ New Task'}
-            </Text>
-          </Pressable>
         </View>
       </View>
 
       {/* Task Progress Dashboard Section */}
-      <View style={styles.progressCard}>
-        <View style={styles.progressHeader}>
-          <View style={styles.progressTitleCol}>
-            <Text style={styles.progressSectionTitle}>Task Progress</Text>
-            <Text style={styles.progressSectionSubtitle}>
-              {totalTasks === 0
-                ? 'No tasks scheduled yet'
-                : `${totalCompleted} of ${totalTasks} task${totalTasks === 1 ? '' : 's'} completed`}
-            </Text>
-          </View>
-          <View
-            style={[
-              styles.overallPercentBadge,
-              overallPercent === 100 && styles.overallPercentBadgeComplete,
-            ]}
-          >
-            <Text
-              style={[
-                styles.overallPercentText,
-                overallPercent === 100 && styles.overallPercentTextComplete,
-              ]}
-            >
-              {overallPercent}%
-            </Text>
-          </View>
-        </View>
+      <TaskProgressCard
+        totalTasks={totalTasks}
+        totalCompleted={totalCompleted}
+        overallPercent={overallPercent}
+        todayTotal={todayTotal}
+        todayCompleted={todayCompleted}
+        todayPercent={todayPercent}
+        weekTotal={weekTotal}
+        weekCompleted={weekCompleted}
+        weekPercent={weekPercent}
+        pendingCount={pendingCount}
+        overdueCount={overdueCount}
+        dueTodayIncomplete={todayTasks.filter(t => !t.is_completed).length}
+        dueUpcomingIncomplete={upcomingTasks.filter(t => !t.is_completed).length}
+      />
 
-        {/* Overall Progress Bar */}
-        <View style={styles.progressBarTrack}>
-          <View
-            style={[
-              styles.progressBarFill,
-              {
-                width: `${Math.min(100, Math.max(0, overallPercent))}%`,
-                backgroundColor: overallPercent === 100 ? '#059669' : '#4263EB',
-              },
-            ]}
-          />
-        </View>
-
-        {/* Today & Current Week Progress Bars */}
-        <View style={styles.progressBreakdownContainer}>
-          {/* Today's Progress */}
-          <View style={styles.progressRow}>
-            <View style={styles.progressRowHeader}>
-              <View style={styles.progressRowTitleWrap}>
-                <Text style={styles.progressRowDotToday}>●</Text>
-                <Text style={styles.progressRowLabel}>Today's Tasks</Text>
-              </View>
-              <Text style={styles.progressRowCount}>
-                {todayCompleted}/{todayTotal} ({todayPercent}%)
-              </Text>
-            </View>
-            <View style={styles.miniProgressBarTrack}>
-              <View
-                style={[
-                  styles.miniProgressBarFill,
-                  {
-                    width: `${Math.min(100, Math.max(0, todayPercent))}%`,
-                    backgroundColor: todayPercent === 100 ? '#059669' : '#4263EB',
-                  },
-                ]}
-              />
-            </View>
-          </View>
-
-          {/* Current Week's Progress */}
-          <View style={styles.progressRow}>
-            <View style={styles.progressRowHeader}>
-              <View style={styles.progressRowTitleWrap}>
-                <Text style={styles.progressRowDotWeek}>●</Text>
-                <Text style={styles.progressRowLabel}>This Week's Tasks</Text>
-              </View>
-              <Text style={styles.progressRowCount}>
-                {weekCompleted}/{weekTotal} ({weekPercent}%)
-              </Text>
-            </View>
-            <View style={styles.miniProgressBarTrack}>
-              <View
-                style={[
-                  styles.miniProgressBarFill,
-                  {
-                    width: `${Math.min(100, Math.max(0, weekPercent))}%`,
-                    backgroundColor: weekPercent === 100 ? '#059669' : '#0284C7',
-                  },
-                ]}
-              />
-            </View>
-          </View>
-        </View>
-
-        {/* Status Summary Counters: Pending, Overdue, Completed */}
-        <View style={styles.statusPillsRow}>
-          <View style={styles.statusPillPending}>
-            <Text style={styles.statusPillPendingLabel}>Pending</Text>
-            <Text style={styles.statusPillPendingValue}>{pendingCount}</Text>
-          </View>
-          <View
-            style={[
-              styles.statusPillOverdue,
-              overdueCount > 0 && styles.statusPillOverdueAlert,
-            ]}
-          >
-            <Text
-              style={[
-                styles.statusPillOverdueLabel,
-                overdueCount > 0 && styles.statusPillOverdueLabelAlert,
-              ]}
-            >
-              Overdue
-            </Text>
-            <Text
-              style={[
-                styles.statusPillOverdueValue,
-                overdueCount > 0 && styles.statusPillOverdueValueAlert,
-              ]}
-            >
-              {overdueCount}
-            </Text>
-          </View>
-          <View style={styles.statusPillCompleted}>
-            <Text style={styles.statusPillCompletedLabel}>Completed</Text>
-            <Text style={styles.statusPillCompletedValue}>{totalCompleted}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Overview Metric Cards */}
-      <View style={styles.statsGrid}>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Due Today</Text>
-          <Text style={[styles.statValue, { color: '#4263EB' }]}>
-            {todayTasks.filter(t => !t.is_completed).length}
-          </Text>
-        </View>
-
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Next 7 Days</Text>
-          <Text style={[styles.statValue, { color: '#0284C7' }]}>
-            {upcomingTasks.filter(t => !t.is_completed).length}
-          </Text>
-        </View>
-
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Total Tasks</Text>
-          <Text style={styles.statValue}>{tasks.length}</Text>
-        </View>
-
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Completed</Text>
-          <Text style={[styles.statValue, { color: '#059669' }]}>
-            {tasks.filter(t => t.is_completed).length}
-          </Text>
-        </View>
-      </View>
-
-      {/* Add / Edit Task Form Card */}
-      {showForm && (
-        <View style={styles.formCard}>
-          <Text style={styles.formTitle}>
-            {editingTask ? `Edit Task #${editingTask.id}` : 'Schedule New Task'}
-          </Text>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Title *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Conduct inventory count for aisle 3"
-              placeholderTextColor="#94A3B8"
-              value={formTitle}
-              onChangeText={setFormTitle}
-            />
-          </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Description</Text>
-            <TextInput
-              style={[styles.input, styles.multilineInput]}
-              placeholder="Add optional notes, details, or steps"
-              placeholderTextColor="#94A3B8"
-              value={formDescription}
-              onChangeText={setFormDescription}
-              multiline
-              numberOfLines={3}
-            />
-          </View>
-
-          {/* Priority Selector */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Priority</Text>
-            <View style={styles.prioritySelector}>
-              {(['low', 'medium', 'high'] as const).map(p => {
-                const isSelected = formPriority === p;
-                return (
-                  <Pressable
-                    key={p}
-                    style={[
-                      styles.priorityOption,
-                      isSelected && styles.priorityOptionSelected,
-                      isSelected &&
-                        p === 'high' && { backgroundColor: '#FEE2E2', borderColor: '#EF4444' },
-                      isSelected &&
-                        p === 'medium' && { backgroundColor: '#FEF3C7', borderColor: '#F59E0B' },
-                      isSelected &&
-                        p === 'low' && { backgroundColor: '#E0E7FF', borderColor: '#6366F1' },
-                    ]}
-                    onPress={() => setFormPriority(p)}
-                  >
-                    <Text
-                      style={[
-                        styles.priorityOptionText,
-                        isSelected && { fontWeight: '700' },
-                        isSelected && p === 'high' && { color: '#B91C1C' },
-                        isSelected && p === 'medium' && { color: '#92400E' },
-                        isSelected && p === 'low' && { color: '#3730A3' },
-                      ]}
-                    >
-                      {p.charAt(0).toUpperCase() + p.slice(1)}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Date & Time Settings */}
-          <View style={styles.inputRow}>
-            <View style={[styles.inputGroup, { flex: 1.2 }]}>
-              <Text style={styles.inputLabel}>Scheduled Date (YYYY-MM-DD)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="YYYY-MM-DD"
-                placeholderTextColor="#94A3B8"
-                value={formDate}
-                onChangeText={setFormDate}
-              />
-            </View>
-
-            <View style={[styles.inputGroup, { flex: 0.8 }]}>
-              <Text style={styles.inputLabel}>Time (e.g. 5:48 PM / 17:48)</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="09:00"
-                placeholderTextColor="#94A3B8"
-                value={formTime}
-                onChangeText={setFormTime}
-              />
-            </View>
-          </View>
-
-          {/* Quick Date Presets */}
-          <View style={styles.presetRow}>
-            <Pressable style={styles.presetChip} onPress={() => setDatePreset(0, '09:00')}>
-              <Text style={styles.presetChipText}>Today 9 AM</Text>
-            </Pressable>
-            <Pressable style={styles.presetChip} onPress={() => setDatePreset(1, '09:00')}>
-              <Text style={styles.presetChipText}>Tomorrow</Text>
-            </Pressable>
-            <Pressable style={styles.presetChip} onPress={() => setDatePreset(3, '09:00')}>
-              <Text style={styles.presetChipText}>In 3 Days</Text>
-            </Pressable>
-            <Pressable style={styles.presetChip} onPress={() => setDatePreset(7, '09:00')}>
-              <Text style={styles.presetChipText}>Next Week</Text>
-            </Pressable>
-          </View>
-
-          {/* Local Reminder Configuration */}
-          <View style={styles.reminderCard}>
-            <Pressable
-              style={styles.reminderToggleRow}
-              onPress={() => setFormReminderEnabled(!formReminderEnabled)}
-            >
-              <View
-                style={[
-                  styles.switchTrack,
-                  formReminderEnabled && styles.switchTrackActive,
-                ]}
-              >
-                <View
-                  style={[
-                    styles.switchThumb,
-                    formReminderEnabled && styles.switchThumbActive,
-                  ]}
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.reminderToggleTitle}>
-                  🔔 Enable local phone reminder
-                </Text>
-                <Text style={styles.reminderToggleSubtitle}>
-                  Trigger an audible notification on this device
-                </Text>
-              </View>
-            </Pressable>
-
-            {formReminderEnabled && (
-              <View style={styles.offsetSection}>
-                <Text style={styles.offsetHeading}>Alert Timing:</Text>
-                <View style={styles.offsetOptionsGrid}>
-                  {[
-                    { label: 'At due time', value: 0 },
-                    { label: '15m before', value: 15 },
-                    { label: '1 hour before', value: 60 },
-                    { label: '1 day before', value: 1440 },
-                  ].map(opt => {
-                    const isPicked = formReminderOffset === opt.value;
-                    return (
-                      <Pressable
-                        key={opt.value}
-                        style={[
-                          styles.offsetChip,
-                          isPicked && styles.offsetChipSelected,
-                        ]}
-                        onPress={() => setFormReminderOffset(opt.value)}
-                      >
-                        <Text
-                          style={[
-                            styles.offsetChipText,
-                            isPicked && styles.offsetChipTextSelected,
-                          ]}
-                        >
-                          {opt.label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </View>
-            )}
-          </View>
-
-          {/* Submit Button */}
-          <Pressable
-            style={[styles.saveButton, saving && { opacity: 0.7 }]}
-            disabled={saving}
-            onPress={handleSaveTask}
-          >
-            <Text style={styles.saveButtonText}>
-              {saving
-                ? 'Saving Task...'
-                : editingTask
-                  ? 'Update Task'
-                  : 'Save & Schedule Task'}
-            </Text>
-          </Pressable>
-        </View>
-      )}
-
-      {/* Segmented Filter Bar */}
+      {/* Segmented Unified View Switcher Bar */}
       <View style={styles.tabsContainer}>
         <Pressable
           style={[styles.tabButton, activeTab === 'today' && styles.tabButtonActive]}
           onPress={() => setActiveTab('today')}
+          accessibilityLabel="View Today's Tasks"
         >
           <Text
             style={[
@@ -1019,11 +801,9 @@ export default function TasksScreen() {
         </Pressable>
 
         <Pressable
-          style={[
-            styles.tabButton,
-            activeTab === 'upcoming' && styles.tabButtonActive,
-          ]}
+          style={[styles.tabButton, activeTab === 'upcoming' && styles.tabButtonActive]}
           onPress={() => setActiveTab('upcoming')}
+          accessibilityLabel="View Upcoming 7 Days Tasks"
         >
           <Text
             style={[
@@ -1038,6 +818,7 @@ export default function TasksScreen() {
         <Pressable
           style={[styles.tabButton, activeTab === 'all' && styles.tabButtonActive]}
           onPress={() => setActiveTab('all')}
+          accessibilityLabel="View All Tasks"
         >
           <Text
             style={[
@@ -1048,9 +829,24 @@ export default function TasksScreen() {
             All Tasks ({allTasks.length})
           </Text>
         </Pressable>
+
+        <Pressable
+          style={[styles.tabButton, activeTab === 'calendar' && styles.tabButtonActive]}
+          onPress={() => setActiveTab('calendar')}
+          accessibilityLabel="View Calendar & Planner"
+        >
+          <Text
+            style={[
+              styles.tabButtonText,
+              activeTab === 'calendar' && styles.tabButtonTextActive,
+            ]}
+          >
+            Calendar ({tasks.length})
+          </Text>
+        </Pressable>
       </View>
 
-      {/* Overdue Section in Today's View if any overdue tasks exist */}
+      {/* Overdue Section in Today's View */}
       {activeTab === 'today' && overdueTasks.length > 0 && (
         <View style={styles.overdueAlertBanner}>
           <Text style={styles.overdueAlertTitle}>
@@ -1062,7 +858,7 @@ export default function TasksScreen() {
         </View>
       )}
 
-      {/* State Handlers */}
+      {/* Loading & Error States */}
       {loading ? (
         <View style={styles.message}>
           <ActivityIndicator size="large" color="#4263EB" />
@@ -1072,145 +868,89 @@ export default function TasksScreen() {
         <View style={styles.errorCard}>
           <Text style={styles.errorTitle}>Connection Failed</Text>
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable style={styles.retryButton} onPress={() => loadTasks()}>
+          <Pressable style={styles.retryButton} onPress={() => loadData()}>
             <Text style={styles.retryButtonText}>Tap here to retry</Text>
           </Pressable>
         </View>
+      ) : activeTab === 'calendar' ? (
+        /* Unified Calendar View */
+        <CalendarSection
+          tasks={tasks}
+          tasksByLocalDate={tasksByLocalDate}
+          selectedDate={selectedDate}
+          onSelectDate={setSelectedDate}
+          rangeStart={rangeStart}
+          rangeEnd={rangeEnd}
+          onSetRangeStart={setRangeStart}
+          onSetRangeEnd={setRangeEnd}
+          dailyProgressMap={dailyProgressMap}
+          currentProgress={currentProgress}
+          onChangeProgress={setCurrentProgress}
+          savingProgress={savingProgress}
+          progressSaveSuccess={progressSaveSuccess}
+          onSaveProgress={handleSaveDailyProgress}
+          reminderTaskIds={reminderTaskIds}
+          deletingTaskId={deletingTaskId}
+          onToggleComplete={handleToggleTask}
+          onToggleReminder={handleToggleReminder}
+          onEditTask={openEditTaskModal}
+          onDeleteTask={handleDeleteTask}
+          onOpenCreateTask={openCreateTaskModal}
+          onOpenCreateAcrossRange={openCreateTaskModal}
+        />
       ) : (
+        /* Standard Tasks List View: Today, Upcoming, or All */
         <View style={styles.taskList}>
-          {displayedTasks.map(task => {
-            const { label: dateLabel, isOverdue } = formatScheduledDisplay(task.scheduled_at);
-            const hasReminder = reminderTaskIds.has(task.id);
-
-            return (
-              <View
+          {displayedTasks.length === 0 ? (
+            <View style={styles.emptyViewCard}>
+              <Text style={styles.emptyViewEmoji}>
+                {activeTab === 'today' ? '☀️' : activeTab === 'upcoming' ? '🗓️' : '📋'}
+              </Text>
+              <Text style={styles.emptyViewTitle}>
+                {activeTab === 'today'
+                  ? 'No tasks scheduled for today'
+                  : activeTab === 'upcoming'
+                    ? 'No upcoming tasks in the next 7 days'
+                    : 'No tasks found in StockFlow'}
+              </Text>
+              <Text style={styles.emptyViewSubtitle}>
+                Tap "+ New Task" above to add an inventory audit, delivery check, or stock count.
+              </Text>
+              <Pressable style={styles.emptyAddBtn} onPress={() => openCreateTaskModal()}>
+                <Text style={styles.emptyAddBtnText}>+ Add Task</Text>
+              </Pressable>
+            </View>
+          ) : (
+            displayedTasks.map(task => (
+              <TaskCard
                 key={task.id}
-                style={[
-                  styles.taskCard,
-                  task.is_completed && styles.taskCardCompleted,
-                ]}
-              >
-                <View style={styles.taskCardRow}>
-                  {/* Checkbox */}
-                  <Pressable
-                    style={[
-                      styles.checkbox,
-                      task.is_completed && styles.checkboxCompleted,
-                    ]}
-                    onPress={() => handleToggleTask(task)}
-                    accessibilityLabel={
-                      task.is_completed ? 'Mark task pending' : 'Mark task completed'
-                    }
-                  >
-                    {task.is_completed && <Text style={styles.checkboxCheckmark}>✓</Text>}
-                  </Pressable>
-
-                  {/* Task Content */}
-                  <View style={styles.taskContent}>
-                    <Text
-                      style={[
-                        styles.taskTitle,
-                        task.is_completed && styles.taskTitleCompleted,
-                      ]}
-                    >
-                      {task.title}
-                    </Text>
-
-                    {Boolean(task.description) && (
-                      <Text
-                        style={[
-                          styles.taskDescription,
-                          task.is_completed && styles.taskDescriptionCompleted,
-                        ]}
-                        numberOfLines={2}
-                      >
-                        {task.description}
-                      </Text>
-                    )}
-
-                    {/* Metadata Badges */}
-                    <View style={styles.taskMetaRow}>
-                      {/* Priority Badge */}
-                      <View
-                        style={[
-                          styles.badge,
-                          task.priority === 'high' && styles.badgeHigh,
-                          task.priority === 'medium' && styles.badgeMedium,
-                          task.priority === 'low' && styles.badgeLow,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.badgeText,
-                            task.priority === 'high' && styles.badgeTextHigh,
-                            task.priority === 'medium' && styles.badgeTextMedium,
-                            task.priority === 'low' && styles.badgeTextLow,
-                          ]}
-                        >
-                          {task.priority.toUpperCase()}
-                        </Text>
-                      </View>
-
-                      {/* Scheduled Date */}
-                      <Text
-                        style={[
-                          styles.dateText,
-                          isOverdue && !task.is_completed && styles.dateTextOverdue,
-                          task.is_completed && styles.dateTextCompleted,
-                        ]}
-                      >
-                        {isOverdue && !task.is_completed ? '⚠️ ' : '📅 '}
-                        {dateLabel}
-                      </Text>
-
-                      {/* Reminder Status Badge & Action */}
-                      {!task.is_completed && hasReminder && (
-                        <Pressable
-                          style={styles.reminderBadgeActive}
-                          onPress={() => handleToggleReminder(task)}
-                        >
-                          <Text style={styles.reminderTextActive}>🔔 Alert Active</Text>
-                        </Pressable>
-                      )}
-
-                      {!task.is_completed && !hasReminder && !isOverdue && (
-                        <Pressable
-                          style={styles.reminderBadgeInactive}
-                          onPress={() => handleToggleReminder(task)}
-                        >
-                          <Text style={styles.reminderTextInactive}>+ 🔔 Set Alert</Text>
-                        </Pressable>
-                      )}
-                    </View>
-                  </View>
-
-                  {/* Actions Column: Edit & Delete */}
-                  <View style={styles.actionColumn}>
-                    <Pressable
-                      style={styles.editButton}
-                      onPress={() => startEditingTask(task)}
-                    >
-                      <Text style={styles.editButtonText}>Edit</Text>
-                    </Pressable>
-
-                    <Pressable
-                      style={[
-                        styles.deleteButton,
-                        deletingTaskId === task.id && { opacity: 0.5 },
-                      ]}
-                      disabled={deletingTaskId === task.id}
-                      onPress={() => handleDeleteTask(task)}
-                      accessibilityLabel={`Delete ${task.title}`}
-                    >
-                      <Text style={styles.deleteButtonText}>✕</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            );
-          })}
+                task={task}
+                isReminderActive={reminderTaskIds.has(task.id)}
+                isDeleting={deletingTaskId === task.id}
+                onToggleComplete={handleToggleTask}
+                onToggleReminder={handleToggleReminder}
+                onEdit={openEditTaskModal}
+                onDelete={handleDeleteTask}
+              />
+            ))
+          )}
         </View>
       )}
+
+      {/* Shared Add / Edit Task Modal */}
+      <TaskModal
+        visible={taskModalVisible}
+        editingTask={editingTask}
+        initialDate={modalInitialDate}
+        activeRangeDays={activeRangeDays}
+        isReminderSet={editingTask ? reminderTaskIds.has(editingTask.id) : true}
+        saving={savingTask}
+        onClose={() => {
+          setTaskModalVisible(false);
+          setEditingTask(null);
+        }}
+        onSave={handleSaveTask}
+      />
     </ScrollView>
   );
 }
@@ -1220,11 +960,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F8FAFC',
   },
+  screenContent: {
+    paddingBottom: 85, // Android bottom tab bar safe padding
+  },
   header: {
     backgroundColor: '#172033',
     paddingTop: Platform.OS === 'ios' ? 52 : 36,
     paddingBottom: 16,
     paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  headerBrandRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
@@ -1249,6 +997,17 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontSize: 12,
   },
+  headerAddBtn: {
+    backgroundColor: '#4263EB',
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  headerAddBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
   welcome: {
     padding: 16,
   },
@@ -1266,377 +1025,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#64748B',
     marginTop: 2,
-  },
-  primaryButton: {
-    backgroundColor: '#4263EB',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-  },
-  primaryButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 13,
-  },
-  progressCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginBottom: 12,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  progressHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  progressTitleCol: {
-    flex: 1,
-  },
-  progressSectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1E293B',
-  },
-  progressSectionSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  overallPercentBadge: {
-    backgroundColor: '#EEF2FF',
-    borderRadius: 8,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  overallPercentBadgeComplete: {
-    backgroundColor: '#D1FAE5',
-  },
-  overallPercentText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#4263EB',
-  },
-  overallPercentTextComplete: {
-    color: '#059669',
-  },
-  progressBarTrack: {
-    height: 6,
-    backgroundColor: '#E2E8F0',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  progressBreakdownContainer: {
-    gap: 8,
-    marginBottom: 10,
-  },
-  progressRow: {},
-  progressRowHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 3,
-  },
-  progressRowTitleWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  progressRowDotToday: {
-    color: '#4263EB',
-    fontSize: 10,
-  },
-  progressRowDotWeek: {
-    color: '#0284C7',
-    fontSize: 10,
-  },
-  progressRowLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#334155',
-  },
-  progressRowCount: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  miniProgressBarTrack: {
-    height: 4,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  miniProgressBarFill: {
-    height: '100%',
-    borderRadius: 2,
-  },
-  statusPillsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  statusPillPending: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 6,
-    paddingVertical: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  statusPillPendingLabel: {
-    fontSize: 10,
-    color: '#64748B',
-  },
-  statusPillPendingValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginTop: 1,
-  },
-  statusPillOverdue: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 6,
-    paddingVertical: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  statusPillOverdueAlert: {
-    backgroundColor: '#FEF2F2',
-    borderColor: '#FCA5A5',
-  },
-  statusPillOverdueLabel: {
-    fontSize: 10,
-    color: '#64748B',
-  },
-  statusPillOverdueLabelAlert: {
-    color: '#DC2626',
-    fontWeight: '700',
-  },
-  statusPillOverdueValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginTop: 1,
-  },
-  statusPillOverdueValueAlert: {
-    color: '#DC2626',
-  },
-  statusPillCompleted: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 6,
-    paddingVertical: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  statusPillCompletedLabel: {
-    fontSize: 10,
-    color: '#64748B',
-  },
-  statusPillCompletedValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#059669',
-    marginTop: 1,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 16,
-    gap: 8,
-    marginBottom: 12,
-  },
-  statCard: {
-    flex: 1,
-    minWidth: '22%',
-    backgroundColor: '#FFFFFF',
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-  },
-  statLabel: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  statValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginTop: 2,
-  },
-  formCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 16,
-    marginBottom: 12,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-  },
-  formTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginBottom: 10,
-  },
-  inputGroup: {
-    marginBottom: 10,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#475569',
-    marginBottom: 4,
-  },
-  input: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 6,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    fontSize: 13,
-    color: '#1E293B',
-  },
-  multilineInput: {
-    minHeight: 56,
-    textAlignVertical: 'top',
-  },
-  prioritySelector: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  priorityOption: {
-    flex: 1,
-    backgroundColor: '#F1F5F9',
-    paddingVertical: 6,
-    alignItems: 'center',
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  priorityOptionSelected: {
-    borderColor: '#4263EB',
-  },
-  priorityOptionText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  presetRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 10,
-  },
-  presetChip: {
-    flex: 1,
-    backgroundColor: '#F1F5F9',
-    paddingVertical: 5,
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  presetChipText: {
-    fontSize: 11,
-    color: '#475569',
-    fontWeight: '500',
-  },
-  reminderCard: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 10,
-  },
-  reminderToggleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  switchTrack: {
-    width: 32,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#CBD5E1',
-    padding: 2,
-  },
-  switchTrackActive: {
-    backgroundColor: '#4263EB',
-  },
-  switchThumb: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#FFFFFF',
-  },
-  switchThumbActive: {
-    transform: [{ translateX: 14 }],
-  },
-  reminderToggleTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1E293B',
-  },
-  reminderToggleSubtitle: {
-    fontSize: 10,
-    color: '#64748B',
-  },
-  offsetSection: {
-    marginTop: 8,
-  },
-  offsetHeading: {
-    fontSize: 11,
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  offsetOptionsGrid: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  offsetChip: {
-    flex: 1,
-    backgroundColor: '#E2E8F0',
-    paddingVertical: 4,
-    alignItems: 'center',
-    borderRadius: 4,
-  },
-  offsetChipSelected: {
-    backgroundColor: '#4263EB',
-  },
-  offsetChipText: {
-    fontSize: 10,
-    color: '#475569',
-  },
-  offsetChipTextSelected: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  saveButton: {
-    backgroundColor: '#4263EB',
-    paddingVertical: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  saveButtonText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
   },
   tabsContainer: {
     flexDirection: 'row',
@@ -1656,7 +1044,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   tabButtonText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#64748B',
     fontWeight: '600',
   },
@@ -1686,122 +1074,43 @@ const styles = StyleSheet.create({
   taskList: {
     paddingHorizontal: 16,
     gap: 8,
-    paddingBottom: 40,
   },
-  taskCard: {
+  emptyViewCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    padding: 12,
+    borderRadius: 12,
+    padding: 28,
+    alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E2E8F0',
+    marginVertical: 12,
   },
-  taskCardCompleted: {
-    backgroundColor: '#F8FAFC',
-    borderColor: '#CBD5E1',
-    opacity: 0.85,
+  emptyViewEmoji: {
+    fontSize: 36,
+    marginBottom: 8,
   },
-  taskCardRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: '#94A3B8',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 2,
-  },
-  checkboxCompleted: {
-    backgroundColor: '#059669',
-    borderColor: '#059669',
-  },
-  checkboxCheckmark: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  taskContent: {
-    flex: 1,
-  },
-  taskTitle: {
-    fontSize: 14,
+  emptyViewTitle: {
+    fontSize: 15,
     fontWeight: '700',
     color: '#1E293B',
   },
-  taskTitleCompleted: {
-    textDecorationLine: 'line-through',
-    color: '#64748B',
-  },
-  taskDescription: {
+  emptyViewSubtitle: {
     fontSize: 12,
     color: '#64748B',
-    marginTop: 2,
+    textAlign: 'center',
+    marginTop: 4,
+    maxWidth: 280,
   },
-  taskDescriptionCompleted: {
-    textDecorationLine: 'line-through',
-    color: '#94A3B8',
+  emptyAddBtn: {
+    backgroundColor: '#4263EB',
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 6,
+    marginTop: 12,
   },
-  taskMetaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 6,
-  },
-  badge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  badgeHigh: { backgroundColor: '#FEE2E2' },
-  badgeMedium: { backgroundColor: '#FEF3C7' },
-  badgeLow: { backgroundColor: '#E0E7FF' },
-  badgeText: { fontSize: 10, fontWeight: '700' },
-  badgeTextHigh: { color: '#B91C1C' },
-  badgeTextMedium: { color: '#92400E' },
-  badgeTextLow: { color: '#3730A3' },
-  dateText: { fontSize: 11, color: '#64748B' },
-  dateTextOverdue: { color: '#DC2626', fontWeight: '700' },
-  dateTextCompleted: { color: '#059669' },
-  reminderBadgeActive: {
-    backgroundColor: '#EEF2FF',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  reminderTextActive: { fontSize: 10, color: '#4263EB', fontWeight: '600' },
-  reminderBadgeInactive: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  reminderTextInactive: { fontSize: 10, color: '#64748B' },
-  actionColumn: {
-    alignItems: 'flex-end',
-    gap: 6,
-  },
-  editButton: {
-    backgroundColor: '#EEF2FF',
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    borderRadius: 4,
-  },
-  editButtonText: {
-    fontSize: 11,
-    color: '#4263EB',
-    fontWeight: '600',
-  },
-  deleteButton: {
-    padding: 4,
-  },
-  deleteButtonText: {
-    color: '#94A3B8',
-    fontSize: 13,
+  emptyAddBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
   message: {
     alignItems: 'center',

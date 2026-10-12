@@ -263,3 +263,32 @@ export function formatFriendlyDate(dateStr: string): string {
   const d = new Date(year, month - 1, day);
   return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
+
+/**
+ * Sorts task records within a day:
+ * 1. High priority tasks first ('high' -> 'medium' -> 'low')
+ * 2. Secondary sort: Chronologically by scheduled time (earliest first, tasks without time last)
+ */
+export function sortTasksByPriorityAndTime<
+  T extends { priority?: string | null; scheduled_at?: string | null }
+>(taskList: T[]): T[] {
+  const priorityRank: Record<string, number> = {
+    high: 1,
+    medium: 2,
+    low: 3,
+  };
+
+  return [...taskList].sort((a, b) => {
+    const rankA = priorityRank[a.priority || 'medium'] ?? 2;
+    const rankB = priorityRank[b.priority || 'medium'] ?? 2;
+
+    if (rankA !== rankB) {
+      return rankA - rankB;
+    }
+
+    const timeA = a.scheduled_at ? new Date(a.scheduled_at).getTime() : Infinity;
+    const timeB = b.scheduled_at ? new Date(b.scheduled_at).getTime() : Infinity;
+
+    return timeA - timeB;
+  });
+}

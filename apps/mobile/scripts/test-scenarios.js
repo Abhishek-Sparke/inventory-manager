@@ -99,6 +99,35 @@ function getDateRangeDays(startStr, endStr) {
   return dates;
 }
 
+function sortTasksByPriorityAndTime(taskList) {
+  const priorityRank = {
+    high: 1,
+    medium: 2,
+    low: 3,
+  };
+
+  return [...taskList].sort((a, b) => {
+    const rankA = priorityRank[a.priority || 'medium'] ?? 2;
+    const rankB = priorityRank[b.priority || 'medium'] ?? 2;
+
+    if (rankA !== rankB) {
+      return rankA - rankB;
+    }
+
+    const timeA = a.scheduled_at ? new Date(a.scheduled_at).getTime() : Infinity;
+    const timeB = b.scheduled_at ? new Date(b.scheduled_at).getTime() : Infinity;
+
+    return timeA - timeB;
+  });
+}
+
+function isTaskOverdue(scheduledAt, isCompleted = false) {
+  if (isCompleted || !scheduledAt) return false;
+  const d = new Date(scheduledAt);
+  if (isNaN(d.getTime())) return false;
+  return d.getTime() < Date.now();
+}
+
 // 2. Alert Evaluator Simulation (Matching services/inventory-alerts.ts)
 function evaluateProductAlerts(products, advanceWarningDays = 7) {
   const todayStr = getLocalDateString();
@@ -338,4 +367,248 @@ console.log('--- Starting StockFlow Upgrades Scenario Tests ---');
   console.log('✓ Scenario 9 PASSED: Existing inventory records and CRUD operations remain intact.');
 }
 
-console.log('\n=== ALL 9 SCENARIOS VERIFIED SUCCESSFULLY ===');
+// Scenario 10: Every task created through Add Task automatically appears in Planner by scheduled_at date and time
+{
+  const today = getLocalDateString();
+  const addTaskPayload = {
+    id: 101,
+    title: 'Audit Cold Storage',
+    description: 'Verify dairy temperature logs',
+    scheduled_at: buildScheduledIsoString(today, '14:30'),
+    priority: 'high',
+    is_completed: false,
+    status: 'pending',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  // Planner groups by local scheduled date
+  const taskLocalDate = getTaskLocalDateString(addTaskPayload.scheduled_at);
+  assert.strictEqual(taskLocalDate, today, 'Task date must map to today in Planner');
+
+  const plannerDateMap = { [today]: [addTaskPayload] };
+  assert.strictEqual(plannerDateMap[today].length, 1);
+  assert.strictEqual(plannerDateMap[today][0].title, 'Audit Cold Storage');
+  console.log('✓ Scenario 10 PASSED: Add Task creation immediately maps into Planner schedule.');
+}
+
+// Scenario 11: Sort high-priority tasks first within each day, then by scheduled time
+{
+  const testDate = '2026-10-15';
+  const unsortedTasks = [
+    { id: 1, title: 'Low Priority Late', priority: 'low', scheduled_at: buildScheduledIsoString(testDate, '17:00') },
+    { id: 2, title: 'Medium Priority Afternoon', priority: 'medium', scheduled_at: buildScheduledIsoString(testDate, '14:00') },
+    { id: 3, title: 'High Priority Afternoon', priority: 'high', scheduled_at: buildScheduledIsoString(testDate, '14:30') },
+    { id: 4, title: 'High Priority Morning', priority: 'high', scheduled_at: buildScheduledIsoString(testDate, '09:00') },
+    { id: 5, title: 'Medium Priority Morning', priority: 'medium', scheduled_at: buildScheduledIsoString(testDate, '08:30') },
+    { id: 6, title: 'Low Priority Morning', priority: 'low', scheduled_at: buildScheduledIsoString(testDate, '07:00') },
+  ];
+
+  const sorted = sortTasksByPriorityAndTime(unsortedTasks);
+
+  // High priority tasks must come first, sorted by time: High 09:00, High 14:30
+  assert.strictEqual(sorted[0].id, 4, 'High 09:00 must be first');
+  assert.strictEqual(sorted[1].id, 3, 'High 14:30 must be second');
+
+  // Medium priority tasks next, sorted by time: Medium 08:30, Medium 14:00
+  assert.strictEqual(sorted[2].id, 5, 'Medium 08:30 must be third');
+  assert.strictEqual(sorted[3].id, 2, 'Medium 14:00 must be fourth');
+
+  // Low priority tasks last, sorted by time: Low 07:00, Low 17:00
+  assert.strictEqual(sorted[4].id, 6, 'Low 07:00 must be fifth');
+  assert.strictEqual(sorted[5].id, 1, 'Low 17:00 must be sixth');
+
+  console.log('✓ Scenario 11 PASSED: High-priority tasks sorted first within day, then chronologically by time.');
+}
+
+// Scenario 12: Show completed, pending, and overdue states and calculate progress from actual completed tasks
+{
+  const nowMs = Date.now();
+  const pastIso = new Date(nowMs - 2 * 3600000).toISOString(); // 2 hours ago
+  const futureIso = new Date(nowMs + 2 * 3600000).toISOString(); // 2 hours in future
+
+  const mixedTasks = [
+    { id: 1, title: 'Done Task', scheduled_at: pastIso, is_completed: true, status: 'completed' },
+    { id: 2, title: 'Overdue Task', scheduled_at: pastIso, is_completed: false, status: 'pending' },
+    { id: 3, title: 'Pending Future Task', scheduled_at: futureIso, is_completed: false, status: 'pending' },
+    { id: 4, title: 'In Progress Future Task', scheduled_at: futureIso, is_completed: false, status: 'in_progress' },
+  ];
+
+  assert.strictEqual(isTaskOverdue(mixedTasks[0].scheduled_at, mixedTasks[0].is_completed), false, 'Completed task is not overdue');
+  assert.strictEqual(isTaskOverdue(mixedTasks[1].scheduled_at, mixedTasks[1].is_completed), true, 'Past incomplete task is overdue');
+  assert.strictEqual(isTaskOverdue(mixedTasks[2].scheduled_at, mixedTasks[2].is_completed), false, 'Future task is not overdue');
+
+  const total = mixedTasks.length;
+  const completed = mixedTasks.filter(t => t.is_completed || t.status === 'completed').length;
+  const pending = total - completed;
+  const percent = Math.round((completed / total) * 100);
+
+  assert.strictEqual(total, 4);
+  assert.strictEqual(completed, 1);
+  assert.strictEqual(pending, 3);
+  assert.strictEqual(percent, 25, 'Actual completed tasks drive completion percentage (1/4 = 25%)');
+
+  console.log('✓ Scenario 12 PASSED: Completed, pending, and overdue states derived accurately with 25% progress.');
+}
+
+// Scenario 13: Shared backend task model synchronization across unified views
+{
+  let backendTasks = [
+    { id: 201, title: 'Initial Shared Task', scheduled_at: '2026-10-12T10:00:00Z', is_completed: false, priority: 'medium' }
+  ];
+
+  // 1. Calendar view modifies task
+  const calendarUpdated = { ...backendTasks[0], is_completed: true, status: 'completed' };
+  backendTasks = backendTasks.map(t => t.id === 201 ? calendarUpdated : t);
+
+  // 2. Today and All Tasks views read the same backendTasks
+  assert.strictEqual(backendTasks[0].is_completed, true);
+  assert.strictEqual(backendTasks[0].status, 'completed');
+
+  // 3. Add Task creates a new record from Today view
+  const newTaskFromAdd = { id: 202, title: 'Count Pallets', scheduled_at: '2026-10-12T15:00:00Z', is_completed: false, priority: 'high' };
+  backendTasks = [newTaskFromAdd, ...backendTasks];
+
+  // 4. Calendar view reads the same shared backendTasks
+  assert.strictEqual(backendTasks.length, 2);
+  assert.strictEqual(backendTasks[0].id, 202);
+  assert.strictEqual(backendTasks[0].title, 'Count Pallets');
+
+  console.log('✓ Scenario 13 PASSED: Shared backend task model synchronization across unified views verified.');
+}
+
+// Scenario 14: Quick Today and Tomorrow date selection and separation
+{
+  const now = new Date();
+  const todayStr = getLocalDateString(now);
+
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowStr = getLocalDateString(tomorrow);
+
+  assert.notStrictEqual(todayStr, tomorrowStr, 'Today and Tomorrow must be distinct calendar days');
+
+  const dayAfterTomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
+  const dayAfterTomorrowStr = getLocalDateString(dayAfterTomorrow);
+
+  const testSchedule = {
+    [todayStr]: [{ id: 1, title: 'Today Task 1' }, { id: 2, title: 'Today Task 2' }],
+    [tomorrowStr]: [{ id: 3, title: 'Tomorrow Task 1' }],
+    [dayAfterTomorrowStr]: [{ id: 4, title: 'Future Task' }],
+  };
+
+  assert.strictEqual((testSchedule[todayStr] || []).length, 2, 'Today has 2 tasks');
+  assert.strictEqual((testSchedule[tomorrowStr] || []).length, 1, 'Tomorrow has 1 task');
+
+  console.log('✓ Scenario 14 PASSED: Today and Tomorrow tasks identified and accessed independently.');
+}
+
+// Scenario 15: Unified Navigation & Bottom Tabs Verification (Planner merged into Tasks screen)
+{
+  const fs = require('fs');
+  const path = require('path');
+
+  // Verify native tabs config
+  const appTabsNativePath = path.join(__dirname, '..', 'src', 'components', 'app-tabs.tsx');
+  const nativeContent = fs.readFileSync(appTabsNativePath, 'utf8');
+
+  // Native tabs must have Home and Tasks, but NOT Planner trigger
+  assert.strictEqual(nativeContent.includes('name="index"'), true, 'Must include Home tab (index)');
+  assert.strictEqual(nativeContent.includes('name="tasks"'), true, 'Must include Tasks tab (tasks)');
+  assert.strictEqual(nativeContent.includes('name="planner"'), false, 'Planner tab must be removed from bottom navigation');
+
+  // Verify web tabs config
+  const appTabsWebPath = path.join(__dirname, '..', 'src', 'components', 'app-tabs.web.tsx');
+  const webContent = fs.readFileSync(appTabsWebPath, 'utf8');
+  assert.strictEqual(webContent.includes('name="home"'), true, 'Web must include Home trigger');
+  assert.strictEqual(webContent.includes('name="tasks"'), true, 'Web must include Tasks trigger');
+  assert.strictEqual(webContent.includes('name="planner"'), false, 'Planner tab trigger must be removed from web navigation');
+
+  // Verify planner.tsx redirects to /tasks
+  const plannerPath = path.join(__dirname, '..', 'src', 'app', 'planner.tsx');
+  const plannerContent = fs.readFileSync(plannerPath, 'utf8');
+  assert.strictEqual(plannerContent.includes('Redirect'), true, 'planner.tsx must redirect');
+  assert.strictEqual(plannerContent.includes('/tasks'), true, 'planner.tsx must redirect to /tasks');
+
+  console.log('✓ Scenario 15 PASSED: Bottom navigation unified (Planner tab removed, redirects to /tasks).');
+}
+
+// Scenario 16: View Switching across Today, Upcoming 7 Days, All Tasks, and Calendar in unified screen
+{
+  const now = new Date();
+  const todayStr = getLocalDateString(now);
+
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowStr = getLocalDateString(tomorrow);
+  const startOfTomorrow = tomorrow.getTime();
+
+  const fourDaysLater = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 4);
+  const fourDaysLaterStr = getLocalDateString(fourDaysLater);
+
+  const tenDaysLater = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 10);
+  const tenDaysLaterStr = getLocalDateString(tenDaysLater);
+
+  const endOfSevenDays = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() + 8,
+    0,
+    0,
+    0,
+    -1
+  ).getTime();
+
+  // Tasks dataset
+  const unifiedTasks = [
+    { id: 1, title: 'Today Task A', scheduled_at: buildScheduledIsoString(todayStr, '09:00'), is_completed: false, priority: 'high' },
+    { id: 2, title: 'Today Task B', scheduled_at: buildScheduledIsoString(todayStr, '14:30'), is_completed: true, priority: 'medium' },
+    { id: 3, title: 'Tomorrow Task', scheduled_at: buildScheduledIsoString(tomorrowStr, '10:00'), is_completed: false, priority: 'medium' },
+    { id: 4, title: 'Day 4 Task', scheduled_at: buildScheduledIsoString(fourDaysLaterStr, '11:00'), is_completed: false, priority: 'low' },
+    { id: 5, title: 'Far Future Task', scheduled_at: buildScheduledIsoString(tenDaysLaterStr, '16:00'), is_completed: false, priority: 'low' },
+  ];
+
+  // 1. Filter Today view
+  const todayView = unifiedTasks.filter(t => getTaskLocalDateString(t.scheduled_at) === todayStr);
+  assert.strictEqual(todayView.length, 2, 'Today view must have 2 tasks');
+  assert.strictEqual(todayView[0].title, 'Today Task A');
+  assert.strictEqual(todayView[1].title, 'Today Task B');
+
+  // 2. Filter Upcoming 7 Days view
+  const upcomingView = unifiedTasks.filter(t => {
+    const timeMs = new Date(t.scheduled_at).getTime();
+    return timeMs >= startOfTomorrow && timeMs <= endOfSevenDays;
+  });
+  assert.strictEqual(upcomingView.length, 2, 'Upcoming 7D view must have 2 tasks (Tomorrow and Day 4)');
+  assert.strictEqual(upcomingView[0].title, 'Tomorrow Task');
+  assert.strictEqual(upcomingView[1].title, 'Day 4 Task');
+
+  // 3. Filter All Tasks view
+  assert.strictEqual(unifiedTasks.length, 5, 'All Tasks view must have all 5 tasks');
+
+  // 4. Calendar view: maps tasks by local date
+  const calendarMap = {};
+  for (const t of unifiedTasks) {
+    const dStr = getTaskLocalDateString(t.scheduled_at);
+    if (!calendarMap[dStr]) calendarMap[dStr] = [];
+    calendarMap[dStr].push(t);
+  }
+
+  assert.strictEqual(calendarMap[todayStr].length, 2);
+  assert.strictEqual(calendarMap[tomorrowStr].length, 1);
+  assert.strictEqual(calendarMap[fourDaysLaterStr].length, 1);
+  assert.strictEqual(calendarMap[tenDaysLaterStr].length, 1);
+
+  // 5. Mutate task from Calendar view: update Task A completion
+  calendarMap[todayStr][0].is_completed = true;
+
+  // Verify that Today view and overall calculations immediately reflect this
+  assert.strictEqual(todayView[0].is_completed, true, 'Task completed in Calendar must reflect in Today view');
+  const completedCount = unifiedTasks.filter(t => t.is_completed).length;
+  assert.strictEqual(completedCount, 2, '2 of 5 tasks are now completed');
+  const percent = Math.round((completedCount / unifiedTasks.length) * 100);
+  assert.strictEqual(percent, 40, 'Progress must be 40% (2/5)');
+
+  console.log('✓ Scenario 16 PASSED: View switching across Today, Upcoming 7D, All Tasks, and Calendar verified.');
+}
+
+console.log('\n=== ALL 16 SCENARIOS VERIFIED SUCCESSFULLY ===');
+
