@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import type { Task } from '@/app/tasks';
+import { getLocalDateString, getTaskLocalDateString } from '@/utils/timezone';
 
 export interface WidgetTaskItem {
   id: number;
@@ -41,36 +42,28 @@ function getFormattedTime(isoString: string | null): string {
  */
 export function prepareWidgetData(tasks: Task[]): StockFlowWidgetData {
   const now = new Date();
-  const todayStr = now.toDateString();
+  const todayStr = getLocalDateString(now);
 
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toDateString();
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const tomorrowStr = getLocalDateString(tomorrow);
 
   const todayList: WidgetTaskItem[] = [];
   const tomorrowList: WidgetTaskItem[] = [];
   let completedCount = 0;
 
   tasks.forEach(task => {
-    if (task.is_completed) {
+    const isDone = Boolean(task.is_completed || task.status === 'completed');
+    if (isDone) {
       completedCount += 1;
     }
 
     if (!task.scheduled_at) {
-      todayList.push({
-        id: task.id,
-        title: task.title,
-        timeFormatted: 'All Day',
-        priority: task.priority || 'medium',
-        isCompleted: task.is_completed,
-      });
       return;
     }
 
-    const taskDate = new Date(task.scheduled_at);
-    if (isNaN(taskDate.getTime())) return;
+    const taskDateStr = getTaskLocalDateString(task.scheduled_at);
+    if (!taskDateStr) return;
 
-    const taskDateStr = taskDate.toDateString();
     const timeFormatted = getFormattedTime(task.scheduled_at);
 
     if (taskDateStr === todayStr) {
@@ -79,7 +72,7 @@ export function prepareWidgetData(tasks: Task[]): StockFlowWidgetData {
         title: task.title,
         timeFormatted,
         priority: task.priority || 'medium',
-        isCompleted: task.is_completed,
+        isCompleted: isDone,
       });
     } else if (taskDateStr === tomorrowStr) {
       tomorrowList.push({
@@ -87,7 +80,7 @@ export function prepareWidgetData(tasks: Task[]): StockFlowWidgetData {
         title: task.title,
         timeFormatted,
         priority: task.priority || 'medium',
-        isCompleted: task.is_completed,
+        isCompleted: isDone,
       });
     }
   });

@@ -34,48 +34,48 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
 }) => {
   return (
     <View style={styles.container}>
-      {/* Task Progress Header */}
+      {/* Daily Task Progress Header */}
       <View style={styles.progressCard}>
         <View style={styles.progressHeader}>
           <View style={styles.progressTitleCol}>
-            <Text style={styles.progressSectionTitle}>Task Progress</Text>
+            <Text style={styles.progressSectionTitle}>Daily Task Progress</Text>
             <Text style={styles.progressSectionSubtitle}>
-              {totalTasks === 0
-                ? 'No tasks scheduled yet'
-                : `${totalCompleted} of ${totalTasks} task${totalTasks === 1 ? '' : 's'} completed`}
+              {todayTotal === 0
+                ? 'No tasks scheduled for today'
+                : `${todayCompleted} of ${todayTotal} task${todayTotal === 1 ? '' : 's'} completed today`}
             </Text>
           </View>
           <View
             style={[
               styles.overallPercentBadge,
-              overallPercent === 100 && styles.overallPercentBadgeComplete,
+              todayPercent === 100 && todayTotal > 0 && styles.overallPercentBadgeComplete,
             ]}
           >
             <Text
               style={[
                 styles.overallPercentText,
-                overallPercent === 100 && styles.overallPercentTextComplete,
+                todayPercent === 100 && todayTotal > 0 && styles.overallPercentTextComplete,
               ]}
             >
-              {overallPercent}%
+              {todayPercent}%
             </Text>
           </View>
         </View>
 
-        {/* Overall Progress Bar */}
+        {/* Daily Progress Bar */}
         <View style={styles.progressBarTrack}>
           <View
             style={[
               styles.progressBarFill,
               {
-                width: `${Math.min(100, Math.max(0, overallPercent))}%`,
-                backgroundColor: overallPercent === 100 ? '#059669' : '#4263EB',
+                width: `${Math.min(100, Math.max(0, todayPercent))}%`,
+                backgroundColor: todayPercent === 100 && todayTotal > 0 ? '#059669' : '#4263EB',
               },
             ]}
           />
         </View>
 
-        {/* Today & Current Week Progress Bars */}
+        {/* Breakdown Progress Bars */}
         <View style={styles.progressBreakdownContainer}>
           {/* Today's Progress */}
           <View style={styles.progressRow}>
@@ -94,7 +94,7 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
                   styles.miniProgressBarFill,
                   {
                     width: `${Math.min(100, Math.max(0, todayPercent))}%`,
-                    backgroundColor: todayPercent === 100 ? '#059669' : '#4263EB',
+                    backgroundColor: todayPercent === 100 && todayTotal > 0 ? '#059669' : '#4263EB',
                   },
                 ]}
               />
@@ -118,7 +118,31 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
                   styles.miniProgressBarFill,
                   {
                     width: `${Math.min(100, Math.max(0, weekPercent))}%`,
-                    backgroundColor: weekPercent === 100 ? '#059669' : '#0284C7',
+                    backgroundColor: weekPercent === 100 && weekTotal > 0 ? '#059669' : '#0284C7',
+                  },
+                ]}
+              />
+            </View>
+          </View>
+
+          {/* All Workspace Tasks */}
+          <View style={styles.progressRow}>
+            <View style={styles.progressRowHeader}>
+              <View style={styles.progressRowTitleWrap}>
+                <Text style={styles.progressRowDotAll}>●</Text>
+                <Text style={styles.progressRowLabel}>All Workspace Tasks</Text>
+              </View>
+              <Text style={styles.progressRowCount}>
+                {totalCompleted}/{totalTasks} ({overallPercent}%)
+              </Text>
+            </View>
+            <View style={styles.miniProgressBarTrack}>
+              <View
+                style={[
+                  styles.miniProgressBarFill,
+                  {
+                    width: `${Math.min(100, Math.max(0, overallPercent))}%`,
+                    backgroundColor: overallPercent === 100 && totalTasks > 0 ? '#059669' : '#64748B',
                   },
                 ]}
               />
@@ -275,6 +299,10 @@ const styles = StyleSheet.create({
   },
   progressRowDotWeek: {
     color: '#0284C7',
+    fontSize: 10,
+  },
+  progressRowDotAll: {
+    color: '#64748B',
     fontSize: 10,
   },
   progressRowLabel: {

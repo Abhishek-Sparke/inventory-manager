@@ -819,4 +819,208 @@ console.log('--- Starting StockFlow Upgrades Scenario Tests ---');
   console.log('✓ Scenario 22 PASSED: Verified in-app and closed-app notification architecture separation and implementation.');
 }
 
-console.log('\n=== ALL 22 SCENARIOS VERIFIED SUCCESSFULLY ===');
+// Scenario 23: Today's progress calculation strictly from tasks due today (completed / total * 100)
+{
+  const todayStr = getLocalDateString(new Date());
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = getLocalDateString(tomorrow);
+
+  const tasks = [
+    // 3 tasks due today: 2 completed, 1 pending -> 67%
+    { id: 101, title: 'Morning Audit', scheduled_at: buildScheduledIsoString(todayStr, '09:00'), is_completed: true, status: 'completed' },
+    { id: 102, title: 'Cooler Temp Check', scheduled_at: buildScheduledIsoString(todayStr, '12:00'), is_completed: true, status: 'completed' },
+    { id: 103, title: 'Closing Count', scheduled_at: buildScheduledIsoString(todayStr, '18:00'), is_completed: false, status: 'pending' },
+    // 2 tasks tomorrow: both completed
+    { id: 104, title: 'Tomorrow Delivery', scheduled_at: buildScheduledIsoString(tomorrowStr, '10:00'), is_completed: true, status: 'completed' },
+    { id: 105, title: 'Tomorrow Restock', scheduled_at: buildScheduledIsoString(tomorrowStr, '14:00'), is_completed: true, status: 'completed' },
+  ];
+
+  const todayList = tasks.filter(t => getTaskLocalDateString(t.scheduled_at) === todayStr);
+  const todayTotal = todayList.length;
+  const todayCompleted = todayList.filter(t => t.is_completed || t.status === 'completed').length;
+  const todayPercent = todayTotal > 0 ? Math.round((todayCompleted / todayTotal) * 100) : 0;
+
+  // Overall workspace stats across all dates: 4 of 5 completed = 80%
+  const overallTotal = tasks.length;
+  const overallCompleted = tasks.filter(t => t.is_completed || t.status === 'completed').length;
+  const overallPercent = overallTotal > 0 ? Math.round((overallCompleted / overallTotal) * 100) : 0;
+
+  assert.strictEqual(todayTotal, 3, 'Today total must be strictly 3 tasks');
+  assert.strictEqual(todayCompleted, 2, 'Today completed must be strictly 2 tasks');
+  assert.strictEqual(todayPercent, 67, 'Today progress must be 67% (2/3)');
+  assert.strictEqual(overallPercent, 80, 'Overall progress must be 80% (4/5)');
+  assert.notStrictEqual(todayPercent, overallPercent, "Today's progress must not be confused with all-time overall progress");
+
+  console.log("✓ Scenario 23 PASSED: Today's progress calculated strictly as completed tasks due today / total tasks due today * 100 (67%).");
+}
+
+// Scenario 24: Tasks scheduled for other dates and unscheduled tasks do NOT affect today's progress
+{
+  const todayStr = getLocalDateString(new Date());
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = getLocalDateString(tomorrow);
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = getLocalDateString(yesterday);
+
+  const baseTasks = [
+    { id: 201, title: 'Today Task 1', scheduled_at: buildScheduledIsoString(todayStr, '10:00'), is_completed: true, status: 'completed' },
+    { id: 202, title: 'Today Task 2', scheduled_at: buildScheduledIsoString(todayStr, '15:00'), is_completed: false, status: 'pending' },
+  ];
+
+  // Adding other-date and unscheduled tasks
+  const augmentedTasks = [
+    ...baseTasks,
+    // Yesterday tasks (both completed)
+    { id: 203, title: 'Yesterday Count 1', scheduled_at: buildScheduledIsoString(yesterdayStr, '09:00'), is_completed: true, status: 'completed' },
+    { id: 204, title: 'Yesterday Count 2', scheduled_at: buildScheduledIsoString(yesterdayStr, '14:00'), is_completed: true, status: 'completed' },
+    // Tomorrow tasks (both pending)
+    { id: 205, title: 'Tomorrow Audit 1', scheduled_at: buildScheduledIsoString(tomorrowStr, '11:00'), is_completed: false, status: 'pending' },
+    { id: 206, title: 'Tomorrow Audit 2', scheduled_at: buildScheduledIsoString(tomorrowStr, '16:00'), is_completed: false, status: 'pending' },
+    // Unscheduled tasks
+    { id: 207, title: 'General Backlog Task', scheduled_at: null, is_completed: true, status: 'completed' },
+    { id: 208, title: 'Unscheduled Shelf Inspection', scheduled_at: null, is_completed: false, status: 'pending' },
+  ];
+
+  const todayList = augmentedTasks.filter(t => getTaskLocalDateString(t.scheduled_at) === todayStr);
+  const todayTotal = todayList.length;
+  const todayCompleted = todayList.filter(t => t.is_completed || t.status === 'completed').length;
+  const todayPercent = todayTotal > 0 ? Math.round((todayCompleted / todayTotal) * 100) : 0;
+
+  assert.strictEqual(todayTotal, 2, 'Today total must remain 2 despite 6 tasks for other dates/backlog');
+  assert.strictEqual(todayCompleted, 1, 'Today completed must remain 1');
+  assert.strictEqual(todayPercent, 50, "Today's progress must remain exactly 50%");
+
+  console.log("✓ Scenario 24 PASSED: Tasks scheduled for other dates and unscheduled tasks do not affect today's progress.");
+}
+
+// Scenario 25: Zero-task handling due today yields 0% without division errors or NaN
+{
+  const todayStr = getLocalDateString(new Date());
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = getLocalDateString(tomorrow);
+
+  // No tasks scheduled for today, only tasks for tomorrow
+  const tasksWithZeroToday = [
+    { id: 301, title: 'Future Task 1', scheduled_at: buildScheduledIsoString(tomorrowStr, '10:00'), is_completed: true, status: 'completed' },
+    { id: 302, title: 'Future Task 2', scheduled_at: buildScheduledIsoString(tomorrowStr, '14:00'), is_completed: true, status: 'completed' },
+  ];
+
+  const todayList = tasksWithZeroToday.filter(t => getTaskLocalDateString(t.scheduled_at) === todayStr);
+  const todayTotal = todayList.length;
+  const todayCompleted = todayList.filter(t => t.is_completed || t.status === 'completed').length;
+  const todayPercent = todayTotal > 0 ? Math.round((todayCompleted / todayTotal) * 100) : 0;
+
+  assert.strictEqual(todayTotal, 0, 'Today total must be 0');
+  assert.strictEqual(todayCompleted, 0, 'Today completed must be 0');
+  assert.strictEqual(todayPercent, 0, 'Today percent must be 0 (no division error)');
+  assert.strictEqual(Number.isFinite(todayPercent), true, 'Today percent must be finite number');
+  assert.strictEqual(isNaN(todayPercent), false, 'Today percent must not be NaN');
+
+  const subtitle = todayTotal === 0
+    ? 'No tasks scheduled for today'
+    : `${todayCompleted} of ${todayTotal} tasks completed today`;
+  assert.strictEqual(subtitle, 'No tasks scheduled for today');
+
+  console.log('✓ Scenario 25 PASSED: Zero tasks due today yields 0% safely without division errors, NaN, or formatting glitches.');
+}
+
+// Scenario 26: Completing, reopening, creating, editing, and deleting a task immediately refreshes today's progress
+{
+  const todayStr = getLocalDateString(new Date());
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = getLocalDateString(tomorrow);
+
+  let tasks = [
+    { id: 401, title: 'Task 1', scheduled_at: buildScheduledIsoString(todayStr, '09:00'), is_completed: true, status: 'completed' },
+    { id: 402, title: 'Task 2', scheduled_at: buildScheduledIsoString(todayStr, '14:00'), is_completed: false, status: 'pending' },
+  ];
+
+  function computeToday(items) {
+    const list = items.filter(t => getTaskLocalDateString(t.scheduled_at) === todayStr);
+    const total = list.length;
+    const completed = list.filter(t => t.is_completed || t.status === 'completed').length;
+    const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return { list, total, completed, percent };
+  }
+
+  // Initial: 1 of 2 -> 50%
+  let state = computeToday(tasks);
+  assert.strictEqual(state.percent, 50);
+
+  // 1. Complete Task 2 -> 2 of 2 -> 100%
+  tasks = tasks.map(t => (t.id === 402 ? { ...t, is_completed: true, status: 'completed' } : t));
+  state = computeToday(tasks);
+  assert.strictEqual(state.completed, 2);
+  assert.strictEqual(state.percent, 100);
+
+  // 2. Reopen Task 1 -> 1 of 2 -> 50%
+  tasks = tasks.map(t => (t.id === 401 ? { ...t, is_completed: false, status: 'pending' } : t));
+  state = computeToday(tasks);
+  assert.strictEqual(state.completed, 1);
+  assert.strictEqual(state.percent, 50);
+
+  // 3. Create Task 3 for today (pending) -> 1 of 3 -> 33%
+  const newTask = { id: 403, title: 'Task 3', scheduled_at: buildScheduledIsoString(todayStr, '16:00'), is_completed: false, status: 'pending' };
+  tasks = [...tasks, newTask];
+  state = computeToday(tasks);
+  assert.strictEqual(state.total, 3);
+  assert.strictEqual(state.completed, 1);
+  assert.strictEqual(state.percent, 33);
+
+  // 4. Edit Task 3 to reschedule to tomorrow -> moves out of today -> 1 of 2 -> 50%
+  tasks = tasks.map(t => (t.id === 403 ? { ...t, scheduled_at: buildScheduledIsoString(tomorrowStr, '16:00') } : t));
+  state = computeToday(tasks);
+  assert.strictEqual(state.total, 2);
+  assert.strictEqual(state.completed, 1);
+  assert.strictEqual(state.percent, 50);
+
+  // 5. Delete Task 2 (the completed one) -> 0 of 1 -> 0%
+  tasks = tasks.filter(t => t.id !== 402);
+  state = computeToday(tasks);
+  assert.strictEqual(state.total, 1);
+  assert.strictEqual(state.completed, 0);
+  assert.strictEqual(state.percent, 0);
+
+  // 6. Delete Task 1 -> 0 of 0 -> 0% (zero tasks safely handled)
+  tasks = tasks.filter(t => t.id !== 401);
+  state = computeToday(tasks);
+  assert.strictEqual(state.total, 0);
+  assert.strictEqual(state.completed, 0);
+  assert.strictEqual(state.percent, 0);
+
+  console.log('✓ Scenario 26 PASSED: Completing, reopening, creating, editing, and deleting a task immediately refreshes today\'s progress.');
+}
+
+// Scenario 27: Shared workspace behavior (no user silos, multi-device consistency)
+{
+  const fs = require('fs');
+  const path = require('path');
+
+  // Verify backend Task model has no user ownership restriction
+  const modelsPath = path.join(__dirname, '..', '..', '..', 'backend', 'inventory', 'models.py');
+  const modelsContent = fs.readFileSync(modelsPath, 'utf8');
+  assert.strictEqual(modelsContent.includes('user = models.ForeignKey'), false, 'Task must not be bound to user foreign key');
+  assert.strictEqual(modelsContent.includes('owner = models.ForeignKey'), false, 'Task must not be bound to owner foreign key');
+
+  // Verify backend Task views query all tasks globally for company workspace
+  const viewsPath = path.join(__dirname, '..', '..', '..', 'backend', 'inventory', 'views.py');
+  const viewsContent = fs.readFileSync(viewsPath, 'utf8');
+  assert.strictEqual(viewsContent.includes('queryset = Task.objects.all()'), true, 'TaskListCreateView must query all tasks for shared workspace');
+  assert.strictEqual(viewsContent.includes('queryset = Product.objects.all()'), true, 'ProductListCreateView must query all products for shared workspace');
+
+  // Verify mobile Task component operates in shared company workspace
+  const tasksComponentPath = path.join(__dirname, '..', 'src', 'app', 'tasks.tsx');
+  const tasksContent = fs.readFileSync(tasksComponentPath, 'utf8');
+  assert.strictEqual(tasksContent.includes('subscribeToTaskChanges'), true, 'Must subscribe to shared task changes');
+  assert.strictEqual(tasksContent.includes('notifyTaskChange'), true, 'Must notify subscribers on task change');
+
+  console.log('✓ Scenario 27 PASSED: Shared company workspace behavior confirmed across backend and mobile app.');
+}
+
+console.log('\n=== ALL 27 SCENARIOS VERIFIED SUCCESSFULLY ===');

@@ -64,6 +64,10 @@ export {
 };
 export type { Task, TaskPriority, TaskStatus };
 
+export function isTaskDone(t: Task): boolean {
+  return Boolean(t.is_completed || t.status === 'completed');
+}
+
 export default function TasksScreen() {
   const params = useLocalSearchParams<{ view?: string }>();
   const [activeTab, setActiveTab] = useState<UnifiedViewTab>(
@@ -310,14 +314,15 @@ export default function TasksScreen() {
     let completed = 0;
 
     tasks.forEach(task => {
-      if (task.is_completed) {
+      const isDone = isTaskDone(task);
+      if (isDone) {
         completed += 1;
       } else {
         pending += 1;
       }
 
       // Check overdue status
-      const isOver = isTaskOverdue(task.scheduled_at, task.is_completed);
+      const isOver = isTaskOverdue(task.scheduled_at, isDone);
       if (isOver) {
         overdue += 1;
         overdueList.push(task);
@@ -348,12 +353,12 @@ export default function TasksScreen() {
       totalTasksCount > 0 ? Math.round((completed / totalTasksCount) * 100) : 0;
 
     const todayTotalCount = todayList.length;
-    const todayCompletedCount = todayList.filter(t => t.is_completed).length;
+    const todayCompletedCount = todayList.filter(isTaskDone).length;
     const todayPercentage =
       todayTotalCount > 0 ? Math.round((todayCompletedCount / todayTotalCount) * 100) : 0;
 
     const weekTotalCount = weekList.length;
-    const weekCompletedCount = weekList.filter(t => t.is_completed).length;
+    const weekCompletedCount = weekList.filter(isTaskDone).length;
     const weekPercentage =
       weekTotalCount > 0 ? Math.round((weekCompletedCount / weekTotalCount) * 100) : 0;
 
@@ -779,8 +784,8 @@ export default function TasksScreen() {
         weekPercent={weekPercent}
         pendingCount={pendingCount}
         overdueCount={overdueCount}
-        dueTodayIncomplete={todayTasks.filter(t => !t.is_completed).length}
-        dueUpcomingIncomplete={upcomingTasks.filter(t => !t.is_completed).length}
+        dueTodayIncomplete={todayTasks.filter(t => !isTaskDone(t)).length}
+        dueUpcomingIncomplete={upcomingTasks.filter(t => !isTaskDone(t)).length}
       />
 
       {/* Segmented Unified View Switcher Bar */}

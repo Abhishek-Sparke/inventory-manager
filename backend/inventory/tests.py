@@ -365,3 +365,107 @@ class DatabaseConfigurationResolutionTests(APITestCase):
         self.assertEqual(mysql_cfg["OPTIONS"].get("charset"), "utf8mb4")
 
 
+class SharedWorkspaceAndTaskProgressAPITests(APITestCase):
+    def test_task_reopen_and_complete_transitions(self):
+        """Verifies completing and reopening a task correctly synchronizes status and is_completed."""
+        task = Task.objects.create(
+            title="Aisle 3 Stock Count",
+            scheduled_at="2026-10-12T10:00:00Z",
+            is_completed=False,
+            status="pending",
+        )
+        url = reverse("task-detail", kwargs={"pk": task.pk})
+
+        # 1. Complete the task
+        complete_res = self.client.patch(
+            url,
+            {"is_completed": True, "status": "completed"},
+            format="json",
+        )
+        self.assertEqual(complete_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(complete_res.data["is_completed"])
+        self.assertEqual(complete_res.data["status"], "completed")
+        task.refresh_from_db()
+        self.assertTrue(task.is_completed)
+        self.assertEqual(task.status, "completed")
+
+        # 2. Reopen the task
+        reopen_res = self.client.patch(
+            url,
+            {"is_completed": False, "status": "pending"},
+            format="json",
+        )
+        self.assertEqual(reopen_res.status_code, status.HTTP_200_OK)
+        self.assertFalse(reopen_res.data["is_completed"])
+        self.assertEqual(reopen_res.data["status"], "pending")
+        task.refresh_from_db()
+        self.assertFalse(task.is_completed)
+        self.assertEqual(task.status, "pending")
+
+    def test_tasks_filtered_by_today_date_excludes_other_dates(self):
+        """Verifies tasks query for today strictly returns today's tasks and excludes past/future dates."""
+        Task.objects.create(
+            title="Yesterday Audit",
+            scheduled_at="2026-10-11T09:00:00Z",
+            is_completed=True,
+            status="completed",
+        )
+        Task.objects.create(
+            title="Today Delivery Check",
+            scheduled_at="2026-10-12T14:30:00Z",
+            is_completed=False,
+            status="pending",
+        )
+        Task.objects.create(
+            title="Tomorrow Pallet Restock",
+            scheduled_at="2026-10-13T11:00:00Z",
+            is_completed=False,
+            status="pending",
+        )
+        url = reverse("task-list-create")
+
+        res = self.client.get(f"{url}?date=2026-10-12")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data if isinstance(res.data, list) else res.data.get("results", [])
+        titles = [t["title"] for t in results]
+        self.assertIn("Today Delivery Check", titles)
+        self.assertNotIn("Yesterday Audit", titles)
+        self.assertNotIn("Tomorrow Pallet Restock", titles)
+        self.assertEqual(len(results), 1)
+
+    def test_zero_tasks_for_date_returns_empty_list(self):
+        """Verifies querying a date with no scheduled tasks safely returns an empty list without error."""
+        url = reverse("task-list-create")
+        res = self.client.get(f"{url}?date=2099-12-31")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        results = res.data if isinstance(res.data, list) else res.data.get("results", [])
+        self.assertEqual(results, [])
+
+    def test_shared_workspace_accessibility(self):
+        """Confirms products and tasks are accessible and modifiable as a shared company workspace without user auth gates."""
+        product = Product.objects.create(
+            name="Shared Workspace Flour",
+            sku="FLOUR-001",
+            price="4.50",
+            quantity=100,
+            reorder_level=20,
+        )
+        task = Task.objects.create(
+            title="Shared Stock Audit",
+            is_completed=False,
+            status="pending",
+        )
+        # Any device can access the shared product list
+        prod_res = self.client.get(reverse("product-list-create"))
+        self.assertEqual(prod_res.status_code, status.HTTP_200_OK)
+        prod_data = prod_res.data if isinstance(prod_res.data, list) else prod_res.data.get("results", [])
+        self.assertTrue(any(p["id"] == product.id for p in prod_data))
+
+        # Any device can access and toggle the shared task
+        task_res = self.client.patch(
+            reverse("task-detail", kwargs={"pk": task.pk}),
+            {"is_completed": True, "status": "completed"},
+            format="json",
+        )
+        self.assertEqual(task_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(task_res.data["is_completed"])
