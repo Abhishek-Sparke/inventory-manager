@@ -1174,4 +1174,127 @@ console.log('--- Starting StockFlow Upgrades Scenario Tests ---');
   console.log('✓ Scenario 30 PASSED: Preserved daily task progress: journal entries do not count as completion; completing/reopening drives progress accurately.');
 }
 
-console.log('\n=== ALL 30 SCENARIOS VERIFIED SUCCESSFULLY ===');
+// Scenario 31: Verification of UI simplification - removal of duplicate journal and notes interfaces
+{
+  const fs = require('fs');
+  const path = require('path');
+
+  // 1. Verify CalendarSection.tsx has NO standalone journal panel, inputs, or save button
+  const calendarPath = path.join(__dirname, '..', 'src', 'components', 'tasks', 'CalendarSection.tsx');
+  const calendarContent = fs.readFileSync(calendarPath, 'utf8');
+
+  assert.strictEqual(
+    calendarContent.includes('saveJournalBtn'),
+    false,
+    'CalendarSection must NOT have saveJournalBtn'
+  );
+  assert.strictEqual(
+    calendarContent.includes('journalCard'),
+    false,
+    'CalendarSection must NOT have journalCard'
+  );
+  assert.strictEqual(
+    calendarContent.includes('What did you accomplish today?'),
+    false,
+    'CalendarSection must NOT have standalone "What did you accomplish today?" field'
+  );
+  assert.strictEqual(
+    calendarContent.includes('Save Daily Progress'),
+    false,
+    'CalendarSection must NOT have standalone "Save Daily Progress" button'
+  );
+  assert.strictEqual(
+    calendarContent.includes('onChangeProgress'),
+    false,
+    'CalendarSection must NOT have obsolete onChangeProgress prop'
+  );
+  assert.strictEqual(
+    calendarContent.includes('onSaveProgress'),
+    false,
+    'CalendarSection must NOT have obsolete onSaveProgress prop'
+  );
+
+  // 2. Verify TaskModal.tsx has NO "Progress Updates & Notes" field, but HAS Daily Progress Journal input
+  const modalPath = path.join(__dirname, '..', 'src', 'components', 'tasks', 'TaskModal.tsx');
+  const modalContent = fs.readFileSync(modalPath, 'utf8');
+
+  assert.strictEqual(
+    modalContent.includes('Progress Updates & Notes'),
+    false,
+    'TaskModal must NOT have "Progress Updates & Notes" field'
+  );
+  assert.strictEqual(
+    modalContent.includes('Daily Progress Journal'),
+    true,
+    'TaskModal MUST have "Daily Progress Journal" section'
+  );
+  assert.strictEqual(
+    modalContent.includes('journalSectionCard'),
+    true,
+    'TaskModal MUST contain journalSectionCard'
+  );
+  assert.strictEqual(
+    modalContent.includes('journalEntry'),
+    true,
+    'TaskModal MUST maintain journalEntry state'
+  );
+
+  // 3. Verify tasks.tsx removed obsolete UI-only state and handlers, but kept TaskProgressCard and task-driven progress
+  const tasksPath = path.join(__dirname, '..', 'src', 'app', 'tasks.tsx');
+  const tasksContent = fs.readFileSync(tasksPath, 'utf8');
+
+  assert.strictEqual(
+    tasksContent.includes('handleSaveDailyProgress'),
+    false,
+    'tasks.tsx must NOT have handleSaveDailyProgress'
+  );
+  assert.strictEqual(
+    tasksContent.includes('savingProgress'),
+    false,
+    'tasks.tsx must NOT have savingProgress state'
+  );
+  assert.strictEqual(
+    tasksContent.includes('progressSaveSuccess'),
+    false,
+    'tasks.tsx must NOT have progressSaveSuccess state'
+  );
+  assert.strictEqual(
+    tasksContent.includes('TaskProgressCard'),
+    true,
+    'tasks.tsx MUST keep TaskProgressCard intact'
+  );
+  assert.strictEqual(
+    tasksContent.includes('todayCompletedCount / todayTotalCount'),
+    true,
+    'tasks.tsx MUST calculate daily progress strictly from completed / total tasks due today'
+  );
+
+  // 4. Verify backend DailyProgress model, serializers, and endpoints remain intact (not deleted)
+  const backendModelPath = path.join(__dirname, '..', '..', '..', 'backend', 'inventory', 'models.py');
+  const backendModelContent = fs.readFileSync(backendModelPath, 'utf8');
+  assert.strictEqual(
+    backendModelContent.includes('class DailyProgress(models.Model):'),
+    true,
+    'Backend DailyProgress model must be preserved'
+  );
+
+  const backendSerializersPath = path.join(__dirname, '..', '..', '..', 'backend', 'inventory', 'serializers.py');
+  const backendSerializersContent = fs.readFileSync(backendSerializersPath, 'utf8');
+  assert.strictEqual(
+    backendSerializersContent.includes('class DailyProgressSerializer'),
+    true,
+    'Backend DailyProgressSerializer must be preserved'
+  );
+
+  const backendUrlsPath = path.join(__dirname, '..', '..', '..', 'backend', 'inventory', 'urls.py');
+  const backendUrlsContent = fs.readFileSync(backendUrlsPath, 'utf8');
+  assert.strictEqual(
+    backendUrlsContent.includes('"daily-progress/"'),
+    true,
+    'Backend /api/daily-progress/ endpoint must be preserved'
+  );
+
+  console.log('✓ Scenario 31 PASSED: Duplicate journal panel and Progress Updates & Notes verified absent; task journal persistence and daily progress calculations preserved.');
+}
+
+console.log('\n=== ALL 31 SCENARIOS VERIFIED SUCCESSFULLY ===');

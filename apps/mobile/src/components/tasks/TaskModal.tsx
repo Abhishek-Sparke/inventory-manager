@@ -57,7 +57,6 @@ export const TaskModal: React.FC<TaskModalProps> = ({
   const [hasEndTime, setHasEndTime] = useState(false);
   const [priority, setPriority] = useState<TaskPriority>('medium');
   const [status, setStatus] = useState<TaskStatus>('pending');
-  const [notes, setNotes] = useState('');
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [reminderOffset, setReminderOffset] = useState<number>(0);
   const [scheduleAcrossRange, setScheduleAcrossRange] = useState(false);
@@ -95,7 +94,6 @@ export const TaskModal: React.FC<TaskModalProps> = ({
 
       setPriority(editingTask.priority || 'medium');
       setStatus(editingTask.status || (editingTask.is_completed ? 'completed' : 'pending'));
-      setNotes(editingTask.notes || '');
       setReminderEnabled(isReminderSet);
       setReminderOffset(editingTask.reminder_minutes ?? 0);
       setScheduleAcrossRange(false);
@@ -109,7 +107,6 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       setHasEndTime(false);
       setPriority('medium');
       setStatus('pending');
-      setNotes('');
       setReminderEnabled(true);
       setReminderOffset(0);
       setScheduleAcrossRange(false);
@@ -136,7 +133,7 @@ export const TaskModal: React.FC<TaskModalProps> = ({
       endTime: hasEndTime ? endTime.trim() : null,
       priority,
       status,
-      notes: notes.trim() || journalTrimmed,
+      notes: journalTrimmed,
       reminderEnabled,
       reminderOffset,
       scheduleAcrossRange,
@@ -354,20 +351,6 @@ export const TaskModal: React.FC<TaskModalProps> = ({
               </View>
             </View>
 
-            {/* Notes */}
-            <View style={styles.formGroup}>
-              <Text style={styles.formLabel}>Progress Updates & Notes</Text>
-              <TextInput
-                style={[styles.formInput, styles.formTextArea]}
-                placeholder="Optional notes, verification results, or observations"
-                placeholderTextColor="#94A3B8"
-                value={notes}
-                onChangeText={setNotes}
-                multiline
-                numberOfLines={2}
-              />
-            </View>
-
             {/* Reminder Settings */}
             <View style={styles.reminderCard}>
               <Pressable
@@ -526,10 +509,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 13,
     color: '#1E293B',
-  },
-  formTextArea: {
-    minHeight: 52,
-    textAlignVertical: 'top',
   },
   journalSectionCard: {
     backgroundColor: '#F8FAFC',

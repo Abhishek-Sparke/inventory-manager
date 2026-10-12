@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   Pressable,
-  TextInput,
 } from 'react-native';
 import { Task, CalendarSubTab } from './types';
 import { TaskCard } from './TaskCard';
@@ -26,11 +25,6 @@ interface CalendarSectionProps {
   onSetRangeStart: (date: string | null) => void;
   onSetRangeEnd: (date: string | null) => void;
   dailyProgressMap: Record<string, DailyProgress>;
-  currentProgress: DailyProgress;
-  onChangeProgress: (progress: DailyProgress) => void;
-  savingProgress: boolean;
-  progressSaveSuccess: boolean;
-  onSaveProgress: () => void;
   reminderTaskIds: Set<number>;
   deletingTaskId: number | null;
   onToggleComplete: (task: Task) => void;
@@ -50,11 +44,6 @@ export const CalendarSection: React.FC<CalendarSectionProps> = ({
   onSetRangeStart,
   onSetRangeEnd,
   dailyProgressMap,
-  currentProgress,
-  onChangeProgress,
-  savingProgress,
-  progressSaveSuccess,
-  onSaveProgress,
   reminderTaskIds,
   deletingTaskId,
   onToggleComplete,
@@ -541,77 +530,6 @@ export const CalendarSection: React.FC<CalendarSectionProps> = ({
               ))}
             </View>
           )}
-
-          {/* Daily Progress & Journal Card */}
-          <View style={styles.journalCard}>
-            <View style={styles.journalHeader}>
-              <View>
-                <Text style={styles.journalTitle}>📝 Daily Progress Journal</Text>
-                <Text style={styles.journalSubtitle}>
-                  Record accomplishments for {selectedDate}
-                </Text>
-              </View>
-              {progressSaveSuccess && (
-                <Text style={styles.saveSuccessPill}>Saved to Cloud ✓</Text>
-              )}
-            </View>
-
-            <View style={styles.journalFieldGroup}>
-              <Text style={styles.journalLabel}>What did you accomplish today? *</Text>
-              <TextInput
-                style={[styles.journalInput, styles.journalTextArea]}
-                placeholder="e.g. Conducted stock audit of 50 SKUs, reconciled dairy cooler quantities..."
-                placeholderTextColor="#94A3B8"
-                value={currentProgress.description}
-                onChangeText={text => onChangeProgress({ ...currentProgress, description: text })}
-                multiline
-                numberOfLines={3}
-              />
-            </View>
-
-            <View style={styles.journalFieldGroup}>
-              <Text style={styles.journalLabel}>Key Achievements & Milestones (Optional)</Text>
-              <TextInput
-                style={styles.journalInput}
-                placeholder="e.g. Zero inventory discrepancies in Section B"
-                placeholderTextColor="#94A3B8"
-                value={currentProgress.achievements || ''}
-                onChangeText={text => onChangeProgress({ ...currentProgress, achievements: text })}
-              />
-            </View>
-
-            <View style={styles.journalFieldGroup}>
-              <Text style={styles.journalLabel}>Blockers & Difficulties (Optional)</Text>
-              <TextInput
-                style={styles.journalInput}
-                placeholder="e.g. Scanner Wi-Fi connectivity dropped twice"
-                placeholderTextColor="#94A3B8"
-                value={currentProgress.blockers || ''}
-                onChangeText={text => onChangeProgress({ ...currentProgress, blockers: text })}
-              />
-            </View>
-
-            <View style={styles.journalFieldGroup}>
-              <Text style={styles.journalLabel}>Next Steps (Optional)</Text>
-              <TextInput
-                style={styles.journalInput}
-                placeholder="e.g. Reorder 20 cartons of organic butter tomorrow"
-                placeholderTextColor="#94A3B8"
-                value={currentProgress.next_steps || ''}
-                onChangeText={text => onChangeProgress({ ...currentProgress, next_steps: text })}
-              />
-            </View>
-
-            <Pressable
-              style={[styles.saveJournalBtn, savingProgress && { opacity: 0.7 }]}
-              disabled={savingProgress}
-              onPress={onSaveProgress}
-            >
-              <Text style={styles.saveJournalBtnText}>
-                {savingProgress ? 'Saving Journal...' : 'Save Daily Progress'}
-              </Text>
-            </Pressable>
-          </View>
         </View>
       )}
 
@@ -1115,74 +1033,6 @@ const styles = StyleSheet.create({
   },
   eventsList: {
     gap: 8,
-  },
-  journalCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginTop: 6,
-  },
-  journalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  journalTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1E293B',
-  },
-  journalSubtitle: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  saveSuccessPill: {
-    backgroundColor: '#D1FAE5',
-    color: '#059669',
-    fontSize: 10,
-    fontWeight: '700',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  journalFieldGroup: {
-    marginBottom: 10,
-  },
-  journalLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#334155',
-    marginBottom: 4,
-  },
-  journalInput: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    fontSize: 12,
-    color: '#1E293B',
-  },
-  journalTextArea: {
-    minHeight: 56,
-    textAlignVertical: 'top',
-  },
-  saveJournalBtn: {
-    backgroundColor: '#4263EB',
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  saveJournalBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
   },
   rangeSummaryCard: {
     backgroundColor: '#FFFFFF',

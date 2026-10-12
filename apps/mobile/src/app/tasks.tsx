@@ -82,16 +82,6 @@ export default function TasksScreen() {
   // Daily Progress Map & Current Selected Date Progress
   const [dailyProgressMap, setDailyProgressMap] = useState<Record<string, DailyProgress>>({});
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateString());
-  const [currentProgress, setCurrentProgress] = useState<DailyProgress>({
-    date: getLocalDateString(),
-    description: '',
-    achievements: '',
-    blockers: '',
-    next_steps: '',
-    notes: '',
-  });
-  const [savingProgress, setSavingProgress] = useState(false);
-  const [progressSaveSuccess, setProgressSaveSuccess] = useState(false);
 
   // Calendar Date Range Selection State
   const [rangeStart, setRangeStart] = useState<string | null>(null);
@@ -207,32 +197,6 @@ export default function TasksScreen() {
       syncWidgetDataAsync(tasks);
     }
   }, [tasks]);
-
-  // Load daily progress for selected date
-  useEffect(() => {
-    async function loadSelectedProgress() {
-      if (dailyProgressMap[selectedDate]) {
-        setCurrentProgress(dailyProgressMap[selectedDate]);
-      } else {
-        const fetched = await fetchDailyProgress(selectedDate);
-        if (fetched && fetched.description !== undefined) {
-          setCurrentProgress(fetched);
-          setDailyProgressMap(prev => ({ ...prev, [selectedDate]: fetched }));
-        } else {
-          setCurrentProgress({
-            date: selectedDate,
-            description: '',
-            achievements: '',
-            blockers: '',
-            next_steps: '',
-            notes: '',
-          });
-        }
-      }
-      setProgressSaveSuccess(false);
-    }
-    loadSelectedProgress();
-  }, [selectedDate, dailyProgressMap]);
 
   // Group tasks by their device-local calendar date
   const tasksByLocalDate = useMemo(() => {
@@ -753,28 +717,6 @@ export default function TasksScreen() {
     }
   }
 
-  // Action: Save Daily Progress
-  async function handleSaveDailyProgress() {
-    setSavingProgress(true);
-    setProgressSaveSuccess(false);
-
-    try {
-      const saved = await saveDailyProgress({
-        ...currentProgress,
-        date: selectedDate,
-      });
-
-      setCurrentProgress(saved);
-      setDailyProgressMap(prev => ({ ...prev, [selectedDate]: saved }));
-      setProgressSaveSuccess(true);
-      setTimeout(() => setProgressSaveSuccess(false), 3000);
-    } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Could not save progress.');
-    } finally {
-      setSavingProgress(false);
-    }
-  }
-
   return (
     <ScrollView
       style={styles.screen}
@@ -937,11 +879,6 @@ export default function TasksScreen() {
           onSetRangeStart={setRangeStart}
           onSetRangeEnd={setRangeEnd}
           dailyProgressMap={dailyProgressMap}
-          currentProgress={currentProgress}
-          onChangeProgress={setCurrentProgress}
-          savingProgress={savingProgress}
-          progressSaveSuccess={progressSaveSuccess}
-          onSaveProgress={handleSaveDailyProgress}
           reminderTaskIds={reminderTaskIds}
           deletingTaskId={deletingTaskId}
           onToggleComplete={handleToggleTask}
