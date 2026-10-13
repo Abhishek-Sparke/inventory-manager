@@ -1,16 +1,26 @@
 from django.urls import path
 from .views import (
-    ProductListCreateView,
-    ProductDetailView,
-    TaskListCreateView,
-    TaskDetailView,
-    DailyProgressListCreateView,
-    DailyProgressDetailView,
     DailyProgressByDateView,
+    DailyProgressDetailView,
+    DailyProgressListCreateView,
+    InstallationBootstrapView,
+    InstallationInfoView,
+    ProductDetailView,
+    ProductListCreateView,
+    RecoveryRestoreView,
+    RecoverySetupView,
+    RecoveryStatusView,
+    TaskDetailView,
+    TaskListCreateView,
     register_push_device,
 )
 
 urlpatterns = [
+    path("installations/bootstrap/", InstallationBootstrapView.as_view(), name="installation-bootstrap"),
+    path("installations/info/", InstallationInfoView.as_view(), name="installation-info"),
+    path("recovery/setup/", RecoverySetupView.as_view(), name="recovery-setup"),
+    path("recovery/status/", RecoveryStatusView.as_view(), name="recovery-status"),
+    path("recovery/restore/", RecoveryRestoreView.as_view(), name="recovery-restore"),
     path("products/", ProductListCreateView.as_view(), name="product-list-create"),
     path("products/<int:pk>/", ProductDetailView.as_view(), name="product-detail"),
     path("tasks/", TaskListCreateView.as_view(), name="task-list-create"),

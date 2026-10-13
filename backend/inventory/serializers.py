@@ -1,11 +1,31 @@
 from rest_framework import serializers
-from .models import Product, Task, DailyProgress
+from .models import Product, Task, DailyProgress, Installation
+
+
+class InstallationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Installation
+        fields = ["id", "device_name", "created_at", "last_active_at"]
+        read_only_fields = fields
 
 
 class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = "__all__"
+        read_only_fields = ["installation"]
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        installation = getattr(request, "installation", None) if request else None
+        sku = attrs.get("sku")
+        if sku and installation:
+            qs = Product.objects.filter(installation=installation, sku=sku)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({"sku": "A product with this SKU already exists in this installation."})
+        return attrs
 
 
 class TaskSerializer(serializers.ModelSerializer):
@@ -15,19 +35,31 @@ class TaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = "__all__"
+        read_only_fields = ["installation"]
 
     def get_journal_entry(self, obj):
         if obj.notes:
             return obj.notes
-        dp = obj.linked_daily_progress.first()
+        dp = (
+            obj.linked_daily_progress.filter(installation=obj.installation).first()
+            if obj.installation
+            else obj.linked_daily_progress.first()
+        )
         if dp and dp.description:
             return dp.description
         return obj.description or ""
 
     def get_daily_progress(self, obj):
-        dp = obj.linked_daily_progress.first()
+        dp = (
+            obj.linked_daily_progress.filter(installation=obj.installation).first()
+            if obj.installation
+            else obj.linked_daily_progress.first()
+        )
         if not dp and obj.scheduled_at:
-            dp = DailyProgress.objects.filter(date=obj.scheduled_at.date()).first()
+            dp = DailyProgress.objects.filter(
+                date=obj.scheduled_at.date(),
+                installation=obj.installation,
+            ).first()
         if dp:
             return {
                 "id": dp.id,
@@ -43,7 +75,10 @@ class TaskSerializer(serializers.ModelSerializer):
             return
 
         task_date = task.scheduled_at.date()
-        dp = DailyProgress.objects.filter(date=task_date).first()
+        dp = DailyProgress.objects.filter(
+            date=task_date,
+            installation=task.installation,
+        ).first()
         if dp:
             if not dp.description:
                 dp.description = journal_note
@@ -57,6 +92,7 @@ class TaskSerializer(serializers.ModelSerializer):
                 date=task_date,
                 description=journal_note,
                 linked_task=task,
+                installation=task.installation,
             )
 
     def validate(self, attrs):
@@ -96,8 +132,32 @@ class TaskSerializer(serializers.ModelSerializer):
         return task
 
 
-
 class DailyProgressSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyProgress
         fields = "__all__"
+        read_only_fields = ["installation"]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        installation = getattr(request, "installation", None) if request else None
+        if installation and "linked_task" in self.fields:
+            self.fields["linked_task"].queryset = Task.objects.filter(installation=installation)
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        installation = getattr(request, "installation", None) if request else None
+        date = attrs.get("date")
+        if date and installation:
+            qs = DailyProgress.objects.filter(installation=installation, date=date)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({"date": "A daily progress entry for this date already exists in this installation."})
+
+        linked_task = attrs.get("linked_task")
+        if linked_task and installation:
+            if linked_task.installation_id != installation.id:
+                raise serializers.ValidationError({"linked_task": "Referenced task does not belong to this installation."})
+        return attrs

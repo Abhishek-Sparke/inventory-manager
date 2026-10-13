@@ -9,11 +9,14 @@ EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send"
 
 def send_low_stock_push_notification(product):
     """
-    Sends remote Expo push notifications to all registered active devices
-    when a product crosses from above threshold to at or below reorder_level.
-    This enables alert delivery even when the StockFlow mobile app is closed/terminated.
+    Sends remote Expo push notifications to registered active devices
+    belonging to the owning installation when a product crosses from
+    above threshold to at or below reorder_level.
     """
-    devices = PushDevice.objects.filter(is_active=True)
+    if not product.installation:
+        return 0
+
+    devices = PushDevice.objects.filter(installation=product.installation, is_active=True)
     if not devices.exists():
         return 0
 

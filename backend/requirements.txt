@@ -17,6 +17,9 @@ psycopg[binary]==3.3.6
 # MySQL Driver (Local Development Fallback)
 mysqlclient==2.3.0
 
+# Distributed Caching & Rate Limiting (Redis)
+redis==5.0.3
+
 # HTTP & Networking
 requests==2.34.2
 urllib3==2.8.0

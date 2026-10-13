@@ -68,8 +68,42 @@ INSTALLED_APPS = [
 ]
 
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "inventory.authentication.InstallationAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ),
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.AnonRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "100/minute",
+        "bootstrap": "30/minute",
+        "recovery": "10/hour",
+    },
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%SZ",
 }
+
+# Cache Configuration: Use Redis when configured; safely fall back to LocMemCache
+# for zero-infrastructure production deployments (e.g. Render without Redis add-on).
+# Trade-off note: LocMemCache stores throttle counters per Gunicorn worker process rather
+# than globally across workers, but prevents startup crashes and requires no Redis infrastructure.
+REDIS_URL = os.getenv("REDIS_URL")
+
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+            "TIMEOUT": 3600,
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "stockflow-cache-memory",
+        }
+    }
 
 
 MIDDLEWARE = [
@@ -215,7 +249,11 @@ def get_database_config(env=None):
             "HOST": "",
             "PORT": "",
             "CONN_MAX_AGE": 0,
-            "OPTIONS": {},
+            "OPTIONS": {
+                "timeout": 30,
+                "transaction_mode": "IMMEDIATE",
+                "init_command": "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 30000",
+            },
             "TEST": {
                 "NAME": str(resolved_runner),
             },
@@ -395,3 +433,9 @@ CORS_ALLOW_ALL_ORIGINS = os.getenv(
     "CORS_ALLOW_ALL_ORIGINS",
     "True" if DEBUG else "False"
 ).lower() in ("true", "1", "t", "yes")
+
+from corsheaders.defaults import default_headers
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-installation-id",
+    "x-installation-token",
+]
