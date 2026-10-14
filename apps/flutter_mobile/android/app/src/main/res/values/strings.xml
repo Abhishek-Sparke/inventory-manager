@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">StockFlow</string>
+    <string name="widget_tasks_description">Today\'s task progress and upcoming tasks</string>
+    <string name="widget_upcoming_description">Upcoming 7-day scheduled tasks</string>
+</resources>

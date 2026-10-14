@@ -1,0 +1,73 @@
+workflows:
+  ios-release:
+    name: Flutter iOS Release
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    working_directory: apps/flutter_mobile
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      groups:
+        - apple_credentials # Securely configured in Codemagic Dashboard: App -> Environment variables
+      vars:
+        XCODE_WORKSPACE: "ios/Runner.xcworkspace"
+        XCODE_SCHEME: "Runner"
+        BUNDLE_ID: "com.sparke27.stockflowMobile"
+    triggering:
+      events:
+        - push
+        - tag
+        - pull_request
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+        - pattern: feature/*
+          include: true
+          source: true
+    scripts:
+      - name: Verify environment and tools
+        script: |
+          echo "Working directory: $(pwd)"
+          flutter --version
+          xcodebuild -version
+      - name: Get Flutter packages
+        script: |
+          flutter packages pub get
+      - name: Install CocoaPods dependencies
+        script: |
+          find ios -name "Podfile" -execdir pod install \;
+      - name: Flutter analyze and unit tests
+        script: |
+          flutter analyze
+          flutter test
+      - name: Set up code signing settings on Xcode project
+        script: |
+          # Codemagic CLI helper; warn-only prevents failure when credentials are not yet configured
+          xcode-project use-profiles --warn-only
+      - name: Build Flutter iOS application
+        script: |
+          # Build signed IPA if credentials exist; otherwise build unsigned release binary
+          if [ -n "$CM_CERTIFICATE" ] || [ -n "$CM_PROVISIONING_PROFILE" ] || [ -n "$APP_STORE_CONNECT_KEY_IDENTIFIER" ] || [ -n "$APP_STORE_CONNECT_PRIVATE_KEY" ]; then
+            echo "Apple code signing settings detected. Building signed release IPA..."
+            flutter build ipa --release
+          else
+            echo "No signing credentials or provisioning profiles found in environment."
+            echo "Building unsigned iOS release archive (--no-codesign)..."
+            flutter build ios --release --no-codesign
+          fi
+    artifacts:
+      - apps/flutter_mobile/build/ios/ipa/*.ipa
+      - apps/flutter_mobile/build/ios/iphoneos/*.app
+      - build/ios/ipa/*.ipa
+      - build/ios/iphoneos/*.app
+      - /Users/builder/Library/Developer/Xcode/Archives/*/*.xcarchive
+      - flutter_drive.log
+    publishing:
+      email:
+        recipients:
+          - 934406abhishek@gmail.com
+        notify:
+          success: true
+          failure: true

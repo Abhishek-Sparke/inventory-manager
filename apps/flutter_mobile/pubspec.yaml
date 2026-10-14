@@ -1,0 +1,47 @@
+name: stockflow_mobile
+description: "StockFlow Offline-First Inventory and Task Management Mobile Application"
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # Networking & HTTP
+  http: ^1.2.0
+
+  # Local Persistence & SQLite
+  sqflite: ^2.3.2
+  path: ^1.9.0
+  path_provider: ^2.1.2
+  flutter_secure_storage: ^9.0.0
+  shared_preferences: ^2.2.2
+
+  # Connectivity Monitoring
+  connectivity_plus: ^5.0.2
+
+  # Notifications
+  flutter_local_notifications: ^17.0.0
+
+  # Utilities
+  intl: ^0.20.3
+  uuid: ^4.3.3
+
+  # Home Screen Widget Support
+  home_widget: ^0.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
