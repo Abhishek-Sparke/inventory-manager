@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import {
@@ -20,6 +20,7 @@ import {
   PRODUCTS_API_URL,
   NOTIFICATIONS_REGISTER_API_URL,
 } from '@/constants/api';
+import { getInstallationHeadersAsync } from '@/services/installation';
 import { isExpoGoClient } from '@/services/notifications';
 import {
   evaluateProductAlerts,
@@ -27,6 +28,7 @@ import {
   ProductAlert,
 } from '@/services/inventory-alerts';
 import { parseDateString, getLocalDateString } from '@/utils/timezone';
+import { getUserFacingErrorMessage } from '@/utils/errors';
 
 type Product = {
   id: number;
@@ -42,7 +44,13 @@ type Product = {
 
 const API_URL = PRODUCTS_API_URL;
 
-async function registerForPushNotifications() {
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  return await getInstallationHeadersAsync();
+}
+
+let lastRegisteredPushToken: string | null = null;
+
+async function registerForPushNotifications(interactive = false) {
   if (Platform.OS === 'web') {
     return null;
   }
@@ -58,10 +66,12 @@ async function registerForPushNotifications() {
   const Notifications = await import('expo-notifications');
 
   if (!Device.isDevice) {
-    Alert.alert(
-      'Physical device required',
-      'Test push notifications on a real phone.'
-    );
+    if (interactive) {
+      Alert.alert(
+        'Physical device required',
+        'Test push notifications on a real phone.'
+      );
+    }
     return null;
   }
 
@@ -71,6 +81,10 @@ async function registerForPushNotifications() {
   let finalStatus = existingStatus;
 
   if (existingStatus !== 'granted') {
+    if (!interactive) {
+      // In background startup, do not interrupt initial launch with blocking modal dialogs
+      return null;
+    }
     const { status } =
       await Notifications.requestPermissionsAsync();
 
@@ -78,10 +92,12 @@ async function registerForPushNotifications() {
   }
 
   if (finalStatus !== 'granted') {
-    Alert.alert(
-      'Permission required',
-      'Allow notifications in your phone settings to receive StockFlow alerts.'
-    );
+    if (interactive) {
+      Alert.alert(
+        'Permission required',
+        'Allow notifications in your phone settings to receive StockFlow alerts.'
+      );
+    }
     return null;
   }
 
@@ -90,10 +106,12 @@ async function registerForPushNotifications() {
     Constants.easConfig?.projectId;
 
   if (!projectId) {
-    Alert.alert(
-      'Setup required',
-      'An Expo EAS project ID is needed for push notifications.'
-    );
+    if (interactive) {
+      Alert.alert(
+        'Setup required',
+        'An Expo EAS project ID is needed for push notifications.'
+      );
+    }
     return null;
   }
 
@@ -101,10 +119,17 @@ async function registerForPushNotifications() {
     await Notifications.getExpoPushTokenAsync({ projectId })
   ).data;
 
+  // Deduplicate: avoid re-sending token to backend if unchanged in this session
+  if (lastRegisteredPushToken === token) {
+    return token;
+  }
+
+  const authHeaders = await getAuthHeaders();
   const response = await fetch(NOTIFICATIONS_REGISTER_API_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders,
     },
     body: JSON.stringify({
       expo_push_token: token,
@@ -118,18 +143,32 @@ async function registerForPushNotifications() {
     );
   }
 
-  Alert.alert(
-    'Notifications enabled',
-    'Your device is registered for StockFlow alerts.'
-  );
+  lastRegisteredPushToken = token;
+
+  if (interactive) {
+    Alert.alert(
+      'Notifications enabled',
+      'Your device is registered for StockFlow alerts.'
+    );
+  }
 
   return token;
 }
 
 
+const startupTimestamp = Date.now();
+
 export default function HomeScreen() {
+  const firstRenderLoggedRef = useRef(false);
+  if (!firstRenderLoggedRef.current) {
+    firstRenderLoggedRef.current = true;
+    const elapsed = Date.now() - startupTimestamp;
+    console.log(`[StartupTiming] First dashboard render: ${elapsed}ms`);
+  }
 
   const [products, setProducts] = useState<Product[]>([]);
+  const activeRequestIdRef = useRef(0);
+  const isFetchingRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(''); const [showForm, setShowForm] = useState(false);
@@ -189,6 +228,11 @@ export default function HomeScreen() {
 
 
   const loadProducts = useCallback(async (pullToRefresh = false) => {
+    if (isFetchingRef.current && !pullToRefresh) {
+      return;
+    }
+    isFetchingRef.current = true;
+    const requestId = ++activeRequestIdRef.current;
     if (pullToRefresh) {
       setRefreshing(true);
     } else {
@@ -197,33 +241,56 @@ export default function HomeScreen() {
 
     setError('');
 
+    let didTimeout = false;
+    let controller: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     try {
       console.log('StockFlow API URL:', API_URL);
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      // 1. Resolve installation credentials FIRST before starting the resource fetch timer
+      const authHeaders = await getAuthHeaders();
+
+      // 2. Start dedicated bounded timeout for the products resource request
+      controller = new AbortController();
+      timeoutId = setTimeout(() => {
+        didTimeout = true;
+        controller?.abort();
+      }, 60000);
 
       let response: Response;
 
+      const fetchStart = Date.now();
       try {
         response = await fetch(API_URL, {
           method: 'GET',
           headers: {
             Accept: 'application/json',
+            ...authHeaders,
           },
           signal: controller.signal,
         });
       } finally {
-        clearTimeout(timeoutId);
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
       }
 
+      const fetchElapsed = Date.now() - fetchStart;
+      console.log(`[StartupTiming] Authenticated products API request (waiting for Render): ${fetchElapsed}ms`);
       console.log('StockFlow API status:', response.status);
 
       if (!response.ok) {
         throw new Error(`API returned HTTP ${response.status}`);
       }
 
+      const parseStart = Date.now();
       const data = await response.json();
+
+      // Prevent stale response from overwriting newer screen state
+      if (requestId !== activeRequestIdRef.current) {
+        return;
+      }
 
       const productList = Array.isArray(data)
         ? data
@@ -232,21 +299,37 @@ export default function HomeScreen() {
           : [];
 
       setProducts(productList);
+      const parseElapsed = Date.now() - parseStart;
+      console.log(`[StartupTiming] Response body parsing and state updates: ${parseElapsed}ms`);
+      console.log('[StartupTiming] Separate dashboard statistics requests: 0ms (derived synchronously)');
       console.log('StockFlow products loaded:', productList.length);
     } catch (error) {
+      if (requestId !== activeRequestIdRef.current) {
+        return;
+      }
       console.error('StockFlow API request failed:', error);
 
-      const message =
-        error instanceof Error
-          ? error.name === 'AbortError'
-            ? 'Request timed out after 15 seconds. Check the server and network.'
-            : `${error.name}: ${error.message}`
-          : String(error);
+      const isTimeout =
+        didTimeout ||
+        (controller && controller.signal.aborted) ||
+        (error instanceof Error &&
+          (error.name === 'AbortError' ||
+            /cancel|aborted/i.test(error.message)));
+
+      const message = isTimeout
+        ? 'The server is taking longer than expected. Please retry.'
+        : getUserFacingErrorMessage(error);
 
       setError(message);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      isFetchingRef.current = false;
+      if (requestId === activeRequestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -262,9 +345,10 @@ export default function HomeScreen() {
 
     let isMounted = true;
 
-    async function setupNotifications() {
+    // Defer non-essential background push registration until after initial dashboard render
+    const timer = setTimeout(async () => {
       try {
-        const token = await registerForPushNotifications();
+        const token = await registerForPushNotifications(false);
 
         if (token && isMounted) {
           console.log('StockFlow push token registered');
@@ -272,12 +356,11 @@ export default function HomeScreen() {
       } catch (error) {
         console.error('Push notification setup failed:', error);
       }
-    }
-
-    setupNotifications();
+    }, 1200);
 
     return () => {
       isMounted = false;
+      clearTimeout(timer);
     };
   }, []);
 
@@ -301,10 +384,12 @@ export default function HomeScreen() {
     setSaving(true);
 
     try {
+      const authHeaders = await getAuthHeaders();
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...authHeaders,
         },
         body: JSON.stringify({
           ...form,
@@ -377,10 +462,12 @@ export default function HomeScreen() {
     setSaving(true);
 
     try {
+      const authHeaders = await getAuthHeaders();
       const response = await fetch(`${API_URL}${editingProduct.id}/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
+          ...authHeaders,
         },
         body: JSON.stringify({
           ...editForm,
@@ -426,8 +513,12 @@ export default function HomeScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              const authHeaders = await getAuthHeaders();
               const response = await fetch(`${API_URL}${product.id}/`, {
                 method: 'DELETE',
+                headers: {
+                  ...authHeaders,
+                },
               });
 
               if (!response.ok) {
@@ -463,10 +554,12 @@ export default function HomeScreen() {
     setSaving(true);
 
     try {
+      const authHeaders = await getAuthHeaders();
       const response = await fetch(`${API_URL}${restockingProduct.id}/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
+          ...authHeaders,
         },
         body: JSON.stringify({
           quantity: Number(restockingProduct.quantity) + quantityToAdd,
@@ -548,44 +641,46 @@ export default function HomeScreen() {
         </Text>
       </View>
 
-      {loading ? (
-        <View style={styles.message}>
-          <ActivityIndicator size="large" color="#4263EB" />
-          <Text style={styles.messageText}>Loading inventory...</Text>
+      {/* 1. Dashboard Stats Grid (Shell renders immediately) */}
+      <View style={styles.statsGrid}>
+        <View style={styles.statCard}>
+          <Text style={styles.statLabel}>Total Products</Text>
+          {loading && products.length === 0 ? (
+            <ActivityIndicator size="small" color="#4263EB" style={styles.statLoader} />
+          ) : (
+            <Text style={styles.statValue}>{error && products.length === 0 ? '—' : products.length}</Text>
+          )}
         </View>
-      ) : error ? (
-        <View style={styles.errorCard}>
-          <Text style={styles.errorTitle}>Connection failed</Text>
-          <Text style={styles.errorText}>{error}</Text>
-          <Text style={styles.retry} onPress={() => loadProducts()}>
-            Tap here to retry
-          </Text>
+
+        <View style={styles.statCard}>
+          <Text style={styles.statLabel}>Total Units</Text>
+          {loading && products.length === 0 ? (
+            <ActivityIndicator size="small" color="#4263EB" style={styles.statLoader} />
+          ) : (
+            <Text style={styles.statValue}>{error && products.length === 0 ? '—' : totalUnits}</Text>
+          )}
         </View>
-      ) : (
-        <>
-          <View style={styles.statsGrid}>
-            <View style={styles.statCard}>
-              <Text style={styles.statLabel}>Total Products</Text>
-              <Text style={styles.statValue}>{products.length}</Text>
-            </View>
 
-            <View style={styles.statCard}>
-              <Text style={styles.statLabel}>Total Units</Text>
-              <Text style={styles.statValue}>{totalUnits}</Text>
-            </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statLabel}>Low Stock</Text>
+          {loading && products.length === 0 ? (
+            <ActivityIndicator size="small" color="#D97706" style={styles.statLoader} />
+          ) : (
+            <Text style={[styles.statValue, { color: '#D97706' }]}>
+              {error && products.length === 0 ? '—' : lowStock}
+            </Text>
+          )}
+        </View>
 
-            <View style={styles.statCard}>
-              <Text style={styles.statLabel}>Low Stock</Text>
-              <Text style={[styles.statValue, { color: '#D97706' }]}>
-                {lowStock}
-              </Text>
-            </View>
-
-            <View style={styles.statCard}>
-              <Text style={styles.statLabel}>Categories</Text>
-              <Text style={styles.statValue}>{categories.size}</Text>
-            </View>
-          </View>
+        <View style={styles.statCard}>
+          <Text style={styles.statLabel}>Categories</Text>
+          {loading && products.length === 0 ? (
+            <ActivityIndicator size="small" color="#4263EB" style={styles.statLoader} />
+          ) : (
+            <Text style={styles.statValue}>{error && products.length === 0 ? '—' : categories.size}</Text>
+          )}
+        </View>
+      </View>
 
           {/* Inventory Expiry & Restock Alerts Banner Card */}
           <View style={styles.alertsContainer}>
@@ -624,6 +719,17 @@ export default function HomeScreen() {
               </View>
             </View>
 
+        {loading && products.length === 0 ? (
+          <View style={styles.alertLoadingCard}>
+            <ActivityIndicator size="small" color="#4263EB" />
+            <Text style={styles.alertLoadingText}>Evaluating stock levels & expiry dates...</Text>
+          </View>
+        ) : error && products.length === 0 ? (
+          <View style={styles.noAlertsCard}>
+            <Text style={styles.noAlertsText}>Unable to verify alerts without connection.</Text>
+          </View>
+        ) : (
+          <>
             {/* Alert Filter Chips */}
             <View style={styles.alertFilterChipsRow}>
               <Pressable
@@ -738,7 +844,9 @@ export default function HomeScreen() {
                 ))}
               </View>
             )}
-          </View>
+          </>
+        )}
+      </View>
 
           <Text style={styles.sectionTitle}>Product Inventory</Text>
           <Pressable
@@ -846,6 +954,32 @@ export default function HomeScreen() {
             </View>
           )}
 
+          {/* Products Section State: error / loading / product cards */}
+      {error && products.length === 0 ? (
+        <View style={styles.errorCard}>
+          <Text style={styles.errorTitle}>Connection failed</Text>
+          <Text style={styles.errorText}>{error}</Text>
+          <Text style={styles.retry} onPress={() => loadProducts()}>
+            Tap here to retry
+          </Text>
+        </View>
+      ) : loading && products.length === 0 ? (
+        <View style={styles.message}>
+          <ActivityIndicator size="large" color="#4263EB" />
+          <Text style={styles.messageText}>Loading inventory...</Text>
+        </View>
+      ) : (
+        <>
+          {error ? (
+            <View style={styles.errorCard}>
+              <Text style={styles.errorTitle}>Connection failed</Text>
+              <Text style={styles.errorText}>{error}</Text>
+              <Text style={styles.retry} onPress={() => loadProducts()}>
+                Tap here to retry
+              </Text>
+            </View>
+          ) : null}
+
           {products.map(product => {
             const isLow =
               Number(product.quantity) <= Number(product.reorder_level);
@@ -894,7 +1028,6 @@ export default function HomeScreen() {
                     })()}
                   </View>
                 </View>
-
 
 
 
@@ -1332,5 +1465,23 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 6,
     alignItems: 'center',
+  },
+  statLoader: {
+    marginTop: 14,
+    marginBottom: 4,
+    alignSelf: 'flex-start',
+  },
+  alertLoadingCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+  },
+  alertLoadingText: {
+    fontSize: 12,
+    color: '#64748B',
   },
 });
