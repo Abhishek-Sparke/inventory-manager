@@ -40,7 +40,9 @@ let isInitialized = false;
  * Creates driver wrapper for Node.js test environment using built-in node:sqlite.
  */
 function createNodeDriver(dbPath: string): SQLiteDriver {
-  const { DatabaseSync } = require('node:sqlite');
+  // Use dynamic evaluation so React Native Metro bundler doesn't attempt to bundle node:sqlite
+  const dynamicRequire = typeof __webpack_require__ === 'function' ? null : eval('require');
+  const { DatabaseSync } = dynamicRequire('node:sqlite');
   const db = new DatabaseSync(dbPath);
 
   // Enable WAL mode and foreign keys for performance and referential integrity
