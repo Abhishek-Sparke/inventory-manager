@@ -8,17 +8,32 @@ permissions:
   contents: read
 jobs:
   build-ipa:
-    runs-on: macos-15
+    runs-on: macos-26
     defaults:
       run:
         working-directory: apps/mobile
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Select Xcode 16.1+
+      - name: Select compatible Xcode 26 toolchain
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer || sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
+          echo "=== Available Xcode versions ==="
+          ls -d /Applications/Xcode* || true
+          if [ -d "/Applications/Xcode_26.6.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.5.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_26.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+          elif ls -d /Applications/Xcode_26* 1> /dev/null 2>&1; then
+            LATEST_XCODE_26=$(ls -d /Applications/Xcode_26* | sort -V | tail -n 1)
+            sudo xcode-select -s "$LATEST_XCODE_26/Contents/Developer"
+          else
+            echo "::error::Xcode 26 was not found on this runner."
+            exit 1
+          fi
           xcodebuild -version
+          xcrun simctl list runtimes
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
