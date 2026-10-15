@@ -33,6 +33,11 @@ jobs:
         run: |
           cd ios
           pod install
+      - name: Patch CocoaPods rsync and script permissions
+        run: |
+          echo "Patching CocoaPods framework copy scripts..."
+          find ios/Pods -name "*-frameworks.sh" -exec sed -i '' 's/rsync --delete -av --filter/rsync --delete -av --no-perms --filter/g' {} + || true
+          find ios/Pods -name "Script-*.sh" -exec sed -i '' 's/rsync --delete -av --filter/rsync --delete -av --no-perms --filter/g' {} + || true
       - name: Build unsigned iOS app
         run: |
           set -o pipefail
