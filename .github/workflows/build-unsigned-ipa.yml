@@ -67,19 +67,44 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             ENABLE_USER_SCRIPT_SANDBOXING=NO \
             | tee xcodebuild-unsigned.log
-      - name: Package IPA
+      - name: Build unsigned iOS widget extension
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -workspace ios/mobile.xcworkspace \
+            -target StockFlowWidgetExtension \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            | tee xcodebuild-widget.log
+      - name: Package IPA with widget extension
         run: |
           set -e
           APP_PATH="build/Build/Products/Release-iphoneos/mobile.app"
+          WIDGET_PATH="build/Build/Products/Release-iphoneos/StockFlowWidgetExtension.appex"
           if [ ! -d "$APP_PATH" ]; then
-            echo "App bundle not found"
+            echo "::error::Main app bundle not found"
             find build -name "*.app" -print
+            exit 1
+          fi
+          if [ ! -d "$WIDGET_PATH" ]; then
+            echo "::error::Widget extension bundle not found"
+            find build -name "*.appex" -print
             exit 1
           fi
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
+          mkdir -p "Payload/mobile.app/PlugIns"
+          cp -R "$WIDGET_PATH" "Payload/mobile.app/PlugIns/"
+          echo "Verifying widget extension in packaged app..."
+          test -d "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex"
           /usr/bin/zip -qry StockFlow.ipa Payload
           test -s StockFlow.ipa
+          tar -tf StockFlow.ipa | grep -E 'PlugIns/StockFlowWidgetExtension.appex/' | head -n 10
           ls -lh StockFlow.ipa
       - name: Upload IPA artifact
         if: success()
