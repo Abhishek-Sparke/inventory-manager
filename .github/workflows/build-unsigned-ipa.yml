@@ -1,7 +1,9 @@
-
 name: StockFlow Unsigned IPA
 
 on:
+  push:
+    branches:
+      - feature/offline-android
   workflow_dispatch:
 
 permissions:
@@ -9,7 +11,7 @@ permissions:
 
 jobs:
   build-ipa:
-    runs-on: macos-26
+    runs-on: macos-14
 
     defaults:
       run:
