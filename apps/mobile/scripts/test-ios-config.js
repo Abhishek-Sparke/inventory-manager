@@ -97,7 +97,8 @@ console.log('✓ Test 6 PASSED: withIosWidget plugin executes cleanly on Expo co
   try {
     fs.mkdirSync(path.join(tmpTestDir, 'mobile.xcodeproj'), { recursive: true });
     fs.mkdirSync(path.join(tmpTestDir, 'mobile'), { recursive: true });
-    fs.copyFileSync(templatePbxproj, path.join(tmpTestDir, 'mobile.xcodeproj', 'project.pbxproj'));
+    const templateContent = fs.readFileSync(templatePbxproj, 'utf8').replace(/Runner/g, 'mobile');
+    fs.writeFileSync(path.join(tmpTestDir, 'mobile.xcodeproj', 'project.pbxproj'), templateContent);
 
     const dangerousMod = modifiedConfig.mods?.ios?.dangerous;
     assert.strictEqual(typeof dangerousMod, 'function', 'dangerousMod must be registered');
@@ -131,6 +132,17 @@ console.log('✓ Test 6 PASSED: withIosWidget plugin executes cleanly on Expo co
     const buildPhases = widgetTarget.buildPhases || [];
     assert.strictEqual(buildPhases.some((bp) => bp.comment === 'Sources'), true, 'Widget target must have Sources build phase');
     assert.strictEqual(buildPhases.some((bp) => bp.comment === 'Frameworks'), true, 'Widget target must have Frameworks build phase');
+
+    const fileRefs = parsedProj.pbxFileReferenceSection();
+    const swiftFileRef = Object.values(fileRefs).find(
+      (ref) => ref.path === 'StockFlowTasksWidget.swift' || ref.path === '"StockFlowTasksWidget.swift"'
+    );
+    assert.notStrictEqual(swiftFileRef, undefined, 'StockFlowTasksWidget.swift PBXFileReference must have relative path without double folder nesting');
+
+    const bridgeFileRef = Object.values(fileRefs).find(
+      (ref) => ref.path === 'StockFlowWidgetBridge.m' || ref.path === '"StockFlowWidgetBridge.m"'
+    );
+    assert.notStrictEqual(bridgeFileRef, undefined, 'StockFlowWidgetBridge.m PBXFileReference must have relative path without double folder nesting');
 
     console.log('✓ Test 7 PASSED: StockFlowWidgetExtension target & build phases generated cleanly without path errors.');
     console.log('\n=== ALL 7 iOS WIDGET CONFIGURATION TESTS PASSED ===');

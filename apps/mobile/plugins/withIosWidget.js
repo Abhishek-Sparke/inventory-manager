@@ -149,11 +149,16 @@ module.exports = function withIosWidget(config) {
       }
 
       // Resolve main application group and widget PBXGroup
-      const mainAppGroupName = targetMainAppDir ? path.basename(targetMainAppDir) : 'mobile';
+      const firstTarget = proj.getFirstTarget();
+      const firstTargetName = (firstTarget?.firstTarget?.name || firstTarget?.name || '').replace(/"/g, '');
+      const mainAppFolderName = targetMainAppDir ? path.basename(targetMainAppDir) : 'mobile';
       const rootMainGroupKey = proj.getFirstProject()?.firstProject?.mainGroup;
+
       const mainAppGroupKey =
-        proj.findPBXGroupKey({ name: mainAppGroupName }) ||
-        proj.findPBXGroupKey({ path: mainAppGroupName }) ||
+        (firstTargetName ? proj.findPBXGroupKey({ name: firstTargetName }) : null) ||
+        (firstTargetName ? proj.findPBXGroupKey({ path: firstTargetName }) : null) ||
+        proj.findPBXGroupKey({ name: mainAppFolderName }) ||
+        proj.findPBXGroupKey({ path: mainAppFolderName }) ||
         rootMainGroupKey;
 
       let widgetGroupKey = proj.findPBXGroupKey({ name: 'StockFlowWidget' });
@@ -171,7 +176,11 @@ module.exports = function withIosWidget(config) {
       }
 
       // Add widget Swift source file to extension target
-      const widgetSwiftRel = ['StockFlowWidget', 'StockFlowTasksWidget.swift'].join('/');
+      const widgetGroupObj = proj.getPBXGroupByKey(widgetGroupKey);
+      const widgetSwiftRel = widgetGroupObj && widgetGroupObj.path
+        ? 'StockFlowTasksWidget.swift'
+        : ['StockFlowWidget', 'StockFlowTasksWidget.swift'].join('/');
+
       if (!proj.hasFile(widgetSwiftRel)) {
         proj.addSourceFile(
           widgetSwiftRel,
@@ -207,8 +216,13 @@ module.exports = function withIosWidget(config) {
         const mainTarget = proj.getFirstTarget();
         const mainTargetUuid = mainTarget?.uuid;
         if (mainTargetUuid) {
-          const bridgeRelM = [mainAppGroupName, 'StockFlowWidgetBridge.m'].join('/');
-          const bridgeRelH = [mainAppGroupName, 'StockFlowWidgetBridge.h'].join('/');
+          const mainAppGroupObj = proj.getPBXGroupByKey(mainAppGroupKey);
+          const bridgeRelM = mainAppGroupObj && mainAppGroupObj.path
+            ? 'StockFlowWidgetBridge.m'
+            : [mainAppGroupName, 'StockFlowWidgetBridge.m'].join('/');
+          const bridgeRelH = mainAppGroupObj && mainAppGroupObj.path
+            ? 'StockFlowWidgetBridge.h'
+            : [mainAppGroupName, 'StockFlowWidgetBridge.h'].join('/');
 
           if (!proj.hasFile(bridgeRelM)) {
             proj.addSourceFile(
