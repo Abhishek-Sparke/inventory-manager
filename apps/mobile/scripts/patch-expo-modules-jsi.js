@@ -61,7 +61,7 @@ if (fs.existsSync(headerTarget)) {
 // - Replace 'weak let' / 'weak var' with 'nonisolated(unsafe) weak var' across all Swift files (avoids Sendable mutable stored property errors)
 // - Remove ', Escapable' protocol conformance from classes (classes are already reference types in Swift 6.0)
 // - In extension expo.CppError: Error, make 'public var message' internal (C++ structs cannot have public members in extensions with library evolution)
-// - In JavaScriptActor.swift, use @_unsafeInheritExecutor on assumeIsolated and runIsolated for Xcode 16
+// - In JavaScriptActor.swift, replace actor-isolated runner with non-isolated _rawRun to avoid actor isolation errors
 const sourcesDir = path.join(appleDir, 'Sources', 'ExpoModulesJSI');
 if (fs.existsSync(sourcesDir)) {
   function walkDir(dir) {
@@ -100,30 +100,39 @@ if (fs.existsSync(sourcesDir)) {
 
         // Fix 3e: JavaScriptActor assumeIsolated and runIsolated
         if (entry.name === 'JavaScriptActor.swift') {
-          // Add @_unsafeInheritExecutor to assumeIsolated
-          if (content.includes('@_alwaysEmitIntoClient\n  @inline(__always)\n  public static func assumeIsolated') ||
-              content.includes('@_alwaysEmitIntoClient\r\n  @inline(__always)\r\n  public static func assumeIsolated')) {
+          // Remove any invalid @_unsafeInheritExecutor attributes from previous edits
+          if (content.includes('@_unsafeInheritExecutor')) {
+            content = content.replace(/@_unsafeInheritExecutor\r?\n\s*/g, '');
+            modified = true;
+          }
+
+          const assumeRegex = /@_alwaysEmitIntoClient\r?\n\s*@inline\(__always\)\r?\n\s*public static func assumeIsolated<T: ~Copyable>\(_ operation: @JavaScriptActor \(\) -> T\) -> T \{[\s\S]*?^\s*\}/m;
+          if (assumeRegex.test(content)) {
             content = content.replace(
-              /@_alwaysEmitIntoClient\r?\n\s*@inline\(__always\)\r?\n\s*public static func assumeIsolated<T: ~Copyable>/g,
-              '@_alwaysEmitIntoClient\n  @_unsafeInheritExecutor\n  @inline(__always)\n  public static func assumeIsolated<T: ~Copyable>'
+              assumeRegex,
+              `@_alwaysEmitIntoClient
+  @inline(__always)
+  public static func assumeIsolated<T: ~Copyable>(_ operation: @JavaScriptActor () -> T) -> T {
+    typealias RawRunner = ((() -> T) -> T)
+    typealias NonisolatedRunner = (@JavaScriptActor () -> T) -> T
+
+    checkIsolated()
+
+    let runner = unsafeBitCast(_rawRun as RawRunner, to: NonisolatedRunner.self)
+    return runner(operation)
+  }`
             );
             modified = true;
           }
 
-          // In assumeIsolated body: ensure clean return runIsolated(operation)
-          if (content.includes('let runner = unsafeBitCast(runIsolated as IsolatedRunner, to: NonisolatedRunner.self)')) {
+          const runRegex = /(@JavaScriptActor\r?\n\s*)?(@usableFromInline\r?\n\s*)?internal static func (?:runIsolated|_rawRun)<T: ~Copyable>\([\s\S]*?^\s*\}/m;
+          if (runRegex.test(content)) {
             content = content.replace(
-              /let runner = unsafeBitCast\(runIsolated as IsolatedRunner, to: NonisolatedRunner\.self\)\r?\n\s*return runner\(operation\)/g,
-              'return runIsolated(operation)'
-            );
-            modified = true;
-          }
-
-          // runIsolated: use @_unsafeInheritExecutor and direct operation() call
-          if (content.includes('internal static func runIsolated<T: ~Copyable>(_ operation: @JavaScriptActor () -> T) -> T')) {
-            content = content.replace(
-              /(@JavaScriptActor\r?\n\s*)?(@usableFromInline\r?\n\s*)?internal static func runIsolated<T: ~Copyable>\(_ operation: @JavaScriptActor \(\) -> T\) -> T \{[\s\S]*?^\s*\}/m,
-              '@usableFromInline\n  @_unsafeInheritExecutor\n  internal static func runIsolated<T: ~Copyable>(_ operation: @JavaScriptActor () -> T) -> T {\n    return operation()\n  }'
+              runRegex,
+              `@usableFromInline
+  internal static func _rawRun<T: ~Copyable>(_ op: () -> T) -> T {
+    return op()
+  }`
             );
             modified = true;
           }
