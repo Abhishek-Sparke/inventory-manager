@@ -256,6 +256,76 @@ if (fs.existsSync(sourcesDir)) {
             );
             modified = true;
           }
+
+          if (content.includes('return try constructor(this, arguments)')) {
+            content = content.replace(
+              'return try constructor(this, arguments)',
+              'return try constructor(this, arguments.copy())'
+            );
+            modified = true;
+          }
+        }
+
+        // Fix 3h: JavaScriptObject.swift: avoid delegating self.init on ~Copyable struct (Xcode 16 Swift compiler bug)
+        if (entry.name === 'JavaScriptObject.swift') {
+          if (content.includes('self.init(runtime, facebook.jsi.Object(runtime.pointee))')) {
+            content = content.replace(
+              'self.init(runtime, facebook.jsi.Object(runtime.pointee))',
+              'self.runtime = runtime\n    self.pointee = facebook.jsi.Object(runtime.pointee)'
+            );
+            modified = true;
+          }
+        }
+
+        // Fix 3i: JavaScriptArray.swift: avoid delegating self.init on ~Copyable struct (Xcode 16 Swift compiler bug)
+        if (entry.name === 'JavaScriptArray.swift') {
+          if (content.includes('self.init(runtime, facebook.jsi.Array(runtime.pointee, length))')) {
+            content = content.replace(
+              'self.init(runtime, facebook.jsi.Array(runtime.pointee, length))',
+              'self.runtime = runtime\n    self.pointee = facebook.jsi.Array(runtime.pointee, length)'
+            );
+            modified = true;
+          }
+          if (content.includes('self.init(runtime, length: items.count)')) {
+            content = content.replace(
+              'self.init(runtime, length: items.count)',
+              'self.runtime = runtime\n    self.pointee = facebook.jsi.Array(runtime.pointee, items.count)'
+            );
+            modified = true;
+          }
+          if (content.includes('self.init(runtime, items: items)')) {
+            content = content.replace(
+              'self.init(runtime, items: items)',
+              'self.runtime = runtime\n    self.pointee = facebook.jsi.Array(runtime.pointee, items.count)\n\n    for (i, item) in items.enumerated() {\n      self[i] = item\n    }'
+            );
+            modified = true;
+          }
+          if (content.includes('self.init(runtime, length: length)')) {
+            content = content.replace(
+              'self.init(runtime, length: length)',
+              'self.runtime = runtime\n    self.pointee = facebook.jsi.Array(runtime.pointee, length)'
+            );
+            modified = true;
+          }
+        }
+
+        // Fix 3j: JavaScriptPromise.swift: avoid delegating self.init on ~Copyable struct (Xcode 16 Swift compiler bug)
+        if (entry.name === 'JavaScriptPromise.swift') {
+          const promiseInitRegex = /@JavaScriptActor\r?\n\s*internal init\(_ runtime: JavaScriptRuntime, _ object: consuming facebook\.jsi\.Object\) throws \{[\s\S]*?^\s*\}/m;
+          if (promiseInitRegex.test(content)) {
+            content = content.replace(
+              promiseInitRegex,
+              `@JavaScriptActor
+  internal init(_ runtime: JavaScriptRuntime, _ object: consuming facebook.jsi.Object) throws {
+    let jsObject = JavaScriptObject(runtime, object)
+    self.runtime = runtime
+    longLivedState.object.reset(jsObject.asValue())
+    try setUpCallbacks()
+    runtime.longLivedObjects.add(longLivedState)
+  }`
+            );
+            modified = true;
+          }
         }
 
         if (modified) {
