@@ -102,6 +102,11 @@ module.exports = function withIosWidget(config) {
       const proj = xcode.project(pbxprojPath);
       proj.parseSync();
 
+      // Ensure 'Plugins' group exists defensively so node-xcode internals never fail with null path
+      if (!proj.pbxGroupByName('Plugins')) {
+        proj.addPbxGroup([], 'Plugins', 'Plugins');
+      }
+
       const targets = proj.pbxNativeTargetSection();
       const existingTargetUuid = Object.keys(targets).find(
         (uuid) =>
@@ -128,31 +133,53 @@ module.exports = function withIosWidget(config) {
         throw new Error(`xcode package did not create target ${EXTENSION_TARGET_NAME}`);
       }
 
-      // Create a real PBXGroup for the Swift source instead of passing a guessed
-      // group name. A failed addSourceFile previously prevented project.pbxproj
-      // from being written, which left the extension target missing in CI.
+      // Add essential build phases to the extension target if missing
+      const nativeTarget = proj.pbxNativeTargetSection()[targetUuid];
+      const hasPhase = (comment) =>
+        (nativeTarget.buildPhases || []).some((bp) => bp.comment === comment);
+
+      if (!hasPhase('Sources')) {
+        proj.addBuildPhase([], 'PBXSourcesBuildPhase', 'Sources', targetUuid);
+      }
+      if (!hasPhase('Frameworks')) {
+        proj.addBuildPhase([], 'PBXFrameworksBuildPhase', 'Frameworks', targetUuid);
+      }
+      if (!hasPhase('Resources')) {
+        proj.addBuildPhase([], 'PBXResourcesBuildPhase', 'Resources', targetUuid);
+      }
+
+      // Resolve main application group and widget PBXGroup
+      const mainAppGroupName = targetMainAppDir ? path.basename(targetMainAppDir) : 'mobile';
+      const rootMainGroupKey = proj.getFirstProject()?.firstProject?.mainGroup;
+      const mainAppGroupKey =
+        proj.findPBXGroupKey({ name: mainAppGroupName }) ||
+        proj.findPBXGroupKey({ path: mainAppGroupName }) ||
+        rootMainGroupKey;
+
       let widgetGroupKey = proj.findPBXGroupKey({ name: 'StockFlowWidget' });
       if (!widgetGroupKey) {
         const createdGroup = proj.addPbxGroup([], 'StockFlowWidget', 'StockFlowWidget');
-        const mainGroupKey = proj.findPBXGroupKey({ name: 'mobile' }) || proj.getFirstProject()?.firstProject?.mainGroup;
-        if (!createdGroup?.uuid || !mainGroupKey) {
+        const parentGroupKey = mainAppGroupKey || rootMainGroupKey;
+        if (!createdGroup?.uuid || !parentGroupKey) {
           throw new Error('Could not create or locate the StockFlowWidget PBXGroup');
         }
-        proj.addToPbxGroup(createdGroup.uuid, mainGroupKey);
-        widgetGroupKey = proj.findPBXGroupKey({ name: 'StockFlowWidget' });
+        proj.addToPbxGroup(createdGroup.uuid, parentGroupKey);
+        widgetGroupKey = proj.findPBXGroupKey({ name: 'StockFlowWidget' }) || createdGroup.uuid;
       }
       if (!widgetGroupKey) {
         throw new Error('Could not resolve StockFlowWidget PBXGroup key');
       }
 
-      // xcode's addSourceFile third argument expects a PBXGroup section key,
-      // not a UUID. Resolve the key with findPBXGroupKey and use the source's
-      // path relative to the iOS project root.
-      proj.addSourceFile(
-        path.join('StockFlowWidget', 'StockFlowTasksWidget.swift'),
-        { target: targetUuid },
-        widgetGroupKey
-      );
+      // Add widget Swift source file to extension target
+      const widgetSwiftRel = ['StockFlowWidget', 'StockFlowTasksWidget.swift'].join('/');
+      if (!proj.hasFile(widgetSwiftRel)) {
+        proj.addSourceFile(
+          widgetSwiftRel,
+          { target: targetUuid },
+          widgetGroupKey
+        );
+      }
+
       proj.addFramework('WidgetKit.framework', { target: targetUuid });
       proj.addFramework('SwiftUI.framework', { target: targetUuid });
 
@@ -175,19 +202,29 @@ module.exports = function withIosWidget(config) {
         }
       }
 
-      // Add bridge files to the app target.
+      // Add bridge files to the main app target with explicit group
       if (targetMainAppDir) {
         const mainTarget = proj.getFirstTarget();
         const mainTargetUuid = mainTarget?.uuid;
         if (mainTargetUuid) {
-          proj.addSourceFile(
-            path.join(path.basename(targetMainAppDir), 'StockFlowWidgetBridge.m'),
-            { target: mainTargetUuid }
-          );
-          proj.addHeaderFile(
-            path.join(path.basename(targetMainAppDir), 'StockFlowWidgetBridge.h'),
-            { target: mainTargetUuid }
-          );
+          const bridgeRelM = [mainAppGroupName, 'StockFlowWidgetBridge.m'].join('/');
+          const bridgeRelH = [mainAppGroupName, 'StockFlowWidgetBridge.h'].join('/');
+
+          if (!proj.hasFile(bridgeRelM)) {
+            proj.addSourceFile(
+              bridgeRelM,
+              { target: mainTargetUuid },
+              mainAppGroupKey
+            );
+          }
+          if (!proj.hasFile(bridgeRelH)) {
+            proj.addHeaderFile(
+              bridgeRelH,
+              { target: mainTargetUuid },
+              mainAppGroupKey
+            );
+          }
+          proj.addFramework('WidgetKit.framework', { target: mainTargetUuid });
         }
       }
 

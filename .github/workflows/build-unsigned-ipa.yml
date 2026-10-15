@@ -42,6 +42,10 @@ jobs:
           cache-dependency-path: apps/mobile/package-lock.json
       - name: Install JavaScript dependencies
         run: npm ci
+      - name: Run widget and config validation tests
+        run: |
+          node scripts/test-widget.js
+          node scripts/test-ios-config.js
       - name: Generate iOS project
         run: npx expo prebuild --platform ios --no-install
       - name: Diagnose generated widget target
@@ -83,6 +87,7 @@ jobs:
             -target StockFlowWidgetExtension \
             -configuration Release \
             -sdk iphoneos \
+            -derivedDataPath build \
             CONFIGURATION_BUILD_DIR="$PWD/build/Build/Products/Release-iphoneos" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -93,17 +98,31 @@ jobs:
         run: |
           set -e
           APP_PATH="build/Build/Products/Release-iphoneos/mobile.app"
-          WIDGET_PATH="build/Build/Products/Release-iphoneos/StockFlowWidgetExtension.appex"
+          if [ ! -d "$APP_PATH" ]; then
+            FOUND_APP=$(find build -name "mobile.app" | head -n 1)
+            if [ -n "$FOUND_APP" ] && [ -d "$FOUND_APP" ]; then
+              APP_PATH="$FOUND_APP"
+            fi
+          fi
           if [ ! -d "$APP_PATH" ]; then
             echo "::error::Main app bundle not found"
             find build -name "*.app" -print
             exit 1
+          fi
+
+          WIDGET_PATH="build/Build/Products/Release-iphoneos/StockFlowWidgetExtension.appex"
+          if [ ! -d "$WIDGET_PATH" ]; then
+            FOUND_WIDGET=$(find build -name "StockFlowWidgetExtension.appex" | head -n 1)
+            if [ -n "$FOUND_WIDGET" ] && [ -d "$FOUND_WIDGET" ]; then
+              WIDGET_PATH="$FOUND_WIDGET"
+            fi
           fi
           if [ ! -d "$WIDGET_PATH" ]; then
             echo "::error::Widget extension bundle not found"
             find build -name "*.appex" -print
             exit 1
           fi
+
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           mkdir -p "Payload/mobile.app/PlugIns"
@@ -126,6 +145,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: StockFlow-iOS-Build-Logs
-          path: apps/mobile/xcodebuild-unsigned.log
+          path: |
+            apps/mobile/xcodebuild-unsigned.log
+            apps/mobile/xcodebuild-widget.log
           if-no-files-found: ignore
           retention-days: 7

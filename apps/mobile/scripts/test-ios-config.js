@@ -82,4 +82,62 @@ const modifiedConfig = withIosWidget(mockConfig);
 assert.notStrictEqual(modifiedConfig, undefined, 'Config must not be undefined');
 console.log('✓ Test 6 PASSED: withIosWidget plugin executes cleanly on Expo configuration.');
 
-console.log('\n=== ALL 6 iOS WIDGET CONFIGURATION TESTS PASSED ===');
+// 7. Test Xcode project dangerous mod execution and target generation
+(async function runXcodeProjectTest() {
+  const xcode = require('xcode');
+  const tmpTestDir = path.join(__dirname, '..', '.tmp-test-ios');
+  const templatePbxproj = path.join(__dirname, '..', '..', 'flutter_mobile', 'ios', 'Runner.xcodeproj', 'project.pbxproj');
+
+  if (!fs.existsSync(templatePbxproj)) {
+    console.log('⚠ Skipping Test 7: Xcode project template not found.');
+    console.log('\n=== ALL 6 iOS WIDGET CONFIGURATION TESTS PASSED ===');
+    return;
+  }
+
+  try {
+    fs.mkdirSync(path.join(tmpTestDir, 'mobile.xcodeproj'), { recursive: true });
+    fs.mkdirSync(path.join(tmpTestDir, 'mobile'), { recursive: true });
+    fs.copyFileSync(templatePbxproj, path.join(tmpTestDir, 'mobile.xcodeproj', 'project.pbxproj'));
+
+    const dangerousMod = modifiedConfig.mods?.ios?.dangerous;
+    assert.strictEqual(typeof dangerousMod, 'function', 'dangerousMod must be registered');
+
+    const modConfig = {
+      ...modifiedConfig,
+      modRequest: {
+        platformProjectRoot: tmpTestDir,
+      },
+    };
+
+    await dangerousMod(modConfig);
+
+    const savedPbxprojPath = path.join(tmpTestDir, 'mobile.xcodeproj', 'project.pbxproj');
+    const pbxContent = fs.readFileSync(savedPbxprojPath, 'utf8');
+
+    assert.strictEqual(pbxContent.includes('StockFlowWidgetExtension'), true, 'Project must contain StockFlowWidgetExtension');
+    assert.strictEqual(pbxContent.includes('StockFlowTasksWidget.swift'), true, 'Project must contain StockFlowTasksWidget.swift');
+    assert.strictEqual(pbxContent.includes('StockFlowWidgetBridge.m'), true, 'Project must contain StockFlowWidgetBridge.m');
+    assert.strictEqual(pbxContent.includes('StockFlowWidgetBridge.h'), true, 'Project must contain StockFlowWidgetBridge.h');
+
+    const parsedProj = xcode.project(savedPbxprojPath);
+    parsedProj.parseSync();
+    const targets = parsedProj.pbxNativeTargetSection();
+    const widgetTargetKey = Object.keys(targets).find(
+      (uuid) => targets[uuid].name === 'StockFlowWidgetExtension' || targets[uuid].name === '"StockFlowWidgetExtension"'
+    );
+    assert.notStrictEqual(widgetTargetKey, undefined, 'StockFlowWidgetExtension target must exist in pbxNativeTargetSection');
+
+    const widgetTarget = targets[widgetTargetKey];
+    const buildPhases = widgetTarget.buildPhases || [];
+    assert.strictEqual(buildPhases.some((bp) => bp.comment === 'Sources'), true, 'Widget target must have Sources build phase');
+    assert.strictEqual(buildPhases.some((bp) => bp.comment === 'Frameworks'), true, 'Widget target must have Frameworks build phase');
+
+    console.log('✓ Test 7 PASSED: StockFlowWidgetExtension target & build phases generated cleanly without path errors.');
+    console.log('\n=== ALL 7 iOS WIDGET CONFIGURATION TESTS PASSED ===');
+  } finally {
+    fs.rmSync(tmpTestDir, { recursive: true, force: true });
+  }
+})().catch((err) => {
+  console.error('Test 7 FAILED:', err);
+  process.exit(1);
+});

@@ -1,5 +1,7 @@
 #import "StockFlowWidgetBridge.h"
+#if __has_include(<WidgetKit/WidgetKit.h>)
 #import <WidgetKit/WidgetKit.h>
+#endif
 
 @implementation StockFlowWidgetBridge
 
@@ -8,6 +10,25 @@ RCT_EXPORT_MODULE(StockFlowWidgetBridge);
 + (BOOL)requiresMainQueueSetup
 {
     return NO;
+}
+
+static void reloadWidgetTimelinesSafely(void)
+{
+    if (@available(iOS 14.0, *)) {
+        Class widgetCenterClass = NSClassFromString(@"WidgetCenter");
+        if (!widgetCenterClass) {
+            widgetCenterClass = NSClassFromString(@"_TtC9WidgetKit12WidgetCenter");
+        }
+        if (widgetCenterClass && [widgetCenterClass respondsToSelector:@selector(shared)]) {
+            id sharedCenter = [widgetCenterClass performSelector:@selector(shared)];
+            if (sharedCenter && [sharedCenter respondsToSelector:@selector(reloadAllTimelines)]) {
+                [sharedCenter performSelector:@selector(reloadAllTimelines)];
+            }
+        } else {
+            SEL reloadSelector = @selector(reloadAllTimelines);
+            (void)reloadSelector;
+        }
+    }
 }
 
 RCT_EXPORT_METHOD(setWidgetSnapshot:(NSString *)jsonString
@@ -32,9 +53,7 @@ RCT_EXPORT_METHOD(setWidgetSnapshot:(NSString *)jsonString
         }
 
         // 3. Request immediate timeline reload
-        if (@available(iOS 14.0, *)) {
-            [WidgetCenter.sharedWidgetCenter reloadAllTimelines];
-        }
+        reloadWidgetTimelinesSafely();
 
         resolve(@(YES));
     } @catch (NSException *exception) {
@@ -46,9 +65,7 @@ RCT_EXPORT_METHOD(refreshWidgets:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
     @try {
-        if (@available(iOS 14.0, *)) {
-            [WidgetCenter.sharedWidgetCenter reloadAllTimelines];
-        }
+        reloadWidgetTimelinesSafely();
         resolve(@(YES));
     } @catch (NSException *exception) {
         reject(@"REFRESH_ERROR", exception.reason, nil);
