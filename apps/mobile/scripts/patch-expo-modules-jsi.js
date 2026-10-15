@@ -24,13 +24,13 @@ if (fs.existsSync(pkgTarget)) {
   }
 }
 
-// 2. Patch RuntimeScheduler.h for Clang C++ attribute position
+// 2. Patch RuntimeScheduler.h for Clang C++ compatibility (remove undefined SWIFT_RETURNS_RETAINED in Xcode 16)
 const headerTarget = path.join(__dirname, '..', 'node_modules', 'expo-modules-jsi', 'apple', 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'RuntimeScheduler.h');
 if (fs.existsSync(headerTarget)) {
   let content = fs.readFileSync(headerTarget, 'utf8');
-  if (content.includes('noexcept SWIFT_RETURNS_RETAINED')) {
-    content = content.replace(/noexcept\s+SWIFT_RETURNS_RETAINED/g, 'SWIFT_RETURNS_RETAINED noexcept');
+  if (content.includes('SWIFT_RETURNS_RETAINED')) {
+    content = content.replace(/\s*SWIFT_RETURNS_RETAINED/g, '');
     fs.writeFileSync(headerTarget, content, 'utf8');
-    console.log('✓ Patched RuntimeScheduler.h SWIFT_RETURNS_RETAINED placement for Clang C++');
+    console.log('✓ Patched RuntimeScheduler.h to remove SWIFT_RETURNS_RETAINED for Xcode 16 C++');
   }
 }
