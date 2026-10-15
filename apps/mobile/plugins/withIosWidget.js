@@ -122,10 +122,12 @@ module.exports = function withIosWidget(config) {
 
           if (extTarget && extTarget.uuid) {
             // Add Swift source file
+            // Add the Swift file to the extension target. Let xcode choose
+            // the default group; a guessed PBXGroup key can throw and prevent
+            // project.pbxproj from being written at all.
             proj.addSourceFile(
               path.join('StockFlowWidget', 'StockFlowTasksWidget.swift'),
-              { target: extTarget.uuid },
-              proj.findPBXGroupKey({ name: 'StockFlowWidget' }) || 'CustomTemplate'
+              { target: extTarget.uuid }
             );
 
             // Add Frameworks
