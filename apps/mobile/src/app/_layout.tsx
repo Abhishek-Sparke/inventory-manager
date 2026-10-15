@@ -16,7 +16,7 @@ export default function TabLayout() {
   useEffect(() => {
     setupNotificationEnvironmentAsync();
 
-    if (Platform.OS === 'android') {
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
       // Refresh widget immediately on app launch using local cache
       refreshWidgetFromSnapshotAsync().catch(() => {});
 

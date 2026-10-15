@@ -1,0 +1,193 @@
+name: StockFlow iOS Build (Simulator & Device)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: 'Select build mode'
+        required: true
+        default: 'simulator'
+        type: choice
+        options:
+          - 'simulator'
+          - 'device'
+      eas_profile:
+        description: 'EAS Profile (only used for device mode with EXPO_TOKEN)'
+        required: false
+        default: 'preview'
+        type: choice
+        options:
+          - 'preview'
+          - 'development'
+  push:
+    branches:
+      - main
+      - feature/**
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/ios-build.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    name: Build iOS (${{ github.event.inputs.build_mode || 'simulator' }})
+    runs-on: macos-14
+
+    defaults:
+      run:
+        working-directory: apps/mobile
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Xcode
+        run: |
+          echo "=== Available Xcode versions ==="
+          ls -d /Applications/Xcode* || true
+          if [ -d "/Applications/Xcode_16.0.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.0.app
+          elif [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          fi
+          xcodebuild -version
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript typecheck
+        run: npx tsc --noEmit
+
+      - name: Run native widget test suite
+        run: node scripts/test-widget.js
+
+      - name: Run iOS WidgetKit configuration unit test
+        run: node scripts/test-ios-config.js
+
+      - name: Run system regression suite
+        run: node scripts/test-scenarios.js
+
+      - name: Validate Expo configuration
+        run: npx expo config --type public
+
+      # =========================================================================
+      # MODE A: iOS SIMULATOR BUILD (No Apple Developer Signing Required)
+      # =========================================================================
+      - name: Generate iOS native project (Prebuild)
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        run: |
+          echo "Running expo prebuild for iOS..."
+          npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods dependencies
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build main application & WidgetKit extension for iOS Simulator
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        run: |
+          set -o pipefail
+          echo "=== Building iOS Simulator Target (main app + WidgetKit extension) ==="
+          xcodebuild \
+            -workspace ios/mobile.xcworkspace \
+            -scheme mobile \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build 2>&1 | tee xcodebuild-simulator.log
+
+      - name: Package Simulator App Bundle into ZIP
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        run: |
+          APP_PATH="build/Build/Products/Debug-iphonesimulator/mobile.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: mobile.app not found at $APP_PATH"
+            find build -name "*.app" || true
+            exit 1
+          fi
+
+          echo "Inspecting compiled application bundle..."
+          ls -la "$APP_PATH"
+          if [ -d "$APP_PATH/PlugIns" ]; then
+            echo "=== Embedded App Extensions (WidgetKit) ==="
+            ls -la "$APP_PATH/PlugIns"
+          fi
+
+          echo "Compressing simulator app bundle into StockFlow-iOS-Simulator.zip..."
+          cd build/Build/Products/Debug-iphonesimulator
+          zip -r -y ../../../../StockFlow-iOS-Simulator.zip mobile.app
+          cd ../../../..
+          ls -lh StockFlow-iOS-Simulator.zip
+
+      - name: Upload iOS Simulator Build Artifact
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFlow-iOS-Simulator
+          path: apps/mobile/StockFlow-iOS-Simulator.zip
+          retention-days: 14
+
+      # =========================================================================
+      # MODE B: PHYSICAL DEVICE IPA BUILD (Credentials Required)
+      # =========================================================================
+      - name: Check physical device signing credentials
+        if: ${{ github.event.inputs.build_mode == 'device' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          echo "=== Checking Physical Device Signing Credentials ==="
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error title=Missing Apple / EAS Credentials::Physical-device IPA builds require active Apple Developer code signing credentials."
+            echo ""
+            echo "EXPLANATION:"
+            echo "1. Apple's iOS security architecture strictly prevents physical iPhones from installing unsigned IPAs."
+            echo "2. App Extensions (WidgetKit) and App Groups (group.com.sparke27.mobile) require an Apple Distribution Certificate and an Ad-Hoc Provisioning Profile created by an Apple Developer Team."
+            echo "3. Free Apple IDs cannot produce Ad-Hoc or Enterprise provisioning profiles for over-the-air installation."
+            echo ""
+            echo "TO RESOLVE:"
+            echo "- Add repository secret 'EXPO_TOKEN' from https://expo.dev/settings/access-tokens (linked to an authorized Apple Developer team)."
+            echo "- Or run Mode A ('simulator') for testing on macOS iOS Simulator without signing credentials."
+            exit 1
+          else
+            echo "EXPO_TOKEN detected. Proceeding with EAS Cloud Build..."
+          fi
+
+      - name: Execute EAS Cloud Build for Physical Device IPA
+        if: ${{ github.event.inputs.build_mode == 'device' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          PROFILE="${{ github.event.inputs.eas_profile || 'preview' }}"
+          echo "Triggering EAS build for iOS with profile: $PROFILE"
+          npx eas-cli build --platform ios --profile "$PROFILE" --non-interactive
+
+      # =========================================================================
+      # LOG ARCHIVING ON FAILURE
+      # =========================================================================
+      - name: Archive compilation logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-failure-logs
+          path: |
+            apps/mobile/xcodebuild-simulator.log
+            apps/mobile/build/Logs/
+          retention-days: 7

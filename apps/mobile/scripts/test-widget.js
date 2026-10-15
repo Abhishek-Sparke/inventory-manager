@@ -368,8 +368,38 @@ console.log('--- Starting StockFlow Native Widget Unit Tests ---');
   // Verify unknown installation or third installation does NOT leak either A or B
   const snapshotC = await loadWidgetSnapshotAsync('installation-charlie-uuid');
   assert.strictEqual(snapshotC, null, 'Unrelated installation Charlie must receive null/empty widget snapshot');
-
   console.log('✓ Test 8 PASSED: Widget snapshots strictly isolated per installation workspace without cross-tenant leakage.');
 
-  console.log('\n=== ALL 8 NATIVE WIDGET TESTS PASSED ===');
+  // Test 9: Verify iOS WidgetKit Extension, App Group Entitlements & Swift Code
+  assert.strictEqual(
+    appJson.expo.plugins.includes('./plugins/withIosWidget'),
+    true,
+    'app.json plugins must include ./plugins/withIosWidget'
+  );
+  assert.strictEqual(
+    appJson.expo.ios.entitlements['com.apple.security.application-groups'].includes('group.com.sparke27.mobile'),
+    true,
+    'app.json must declare group.com.sparke27.mobile in iOS App Group entitlements'
+  );
+
+  const swiftWidgetPath = path.join(__dirname, '..', 'plugins', 'ios-widget', 'StockFlowTasksWidget.swift');
+  assert.strictEqual(fs.existsSync(swiftWidgetPath), true, 'StockFlowTasksWidget.swift must exist');
+  const swiftCode = fs.readFileSync(swiftWidgetPath, 'utf8');
+  assert.strictEqual(swiftCode.includes('import WidgetKit'), true, 'Swift widget must import WidgetKit');
+  assert.strictEqual(swiftCode.includes('import SwiftUI'), true, 'Swift widget must import SwiftUI');
+  assert.strictEqual(swiftCode.includes('group.com.sparke27.mobile'), true, 'Swift widget must reference App Group');
+  assert.strictEqual(swiftCode.includes('mobile://tasks?view=today'), true, 'Swift widget must support deep link mobile://tasks?view=today');
+  assert.strictEqual(swiftCode.includes('SmallWidgetView'), true, 'Swift widget must implement SmallWidgetView');
+  assert.strictEqual(swiftCode.includes('MediumWidgetView'), true, 'Swift widget must implement MediumWidgetView');
+
+  const bridgePath = path.join(__dirname, '..', 'plugins', 'ios-widget', 'StockFlowWidgetBridge.m');
+  assert.strictEqual(fs.existsSync(bridgePath), true, 'StockFlowWidgetBridge.m must exist');
+  const bridgeCode = fs.readFileSync(bridgePath, 'utf8');
+  assert.strictEqual(bridgeCode.includes('setWidgetSnapshot'), true, 'iOS bridge must implement setWidgetSnapshot');
+  assert.strictEqual(bridgeCode.includes('refreshWidgets'), true, 'iOS bridge must implement refreshWidgets');
+  assert.strictEqual(bridgeCode.includes('group.com.sparke27.mobile'), true, 'iOS bridge must use App Group');
+
+  console.log('✓ Test 9 PASSED: iOS WidgetKit extension, SwiftUI views, App Group entitlements, and native bridge verified.');
+
+  console.log('\n=== ALL 9 NATIVE WIDGET TESTS PASSED ===');
 })();

@@ -11,6 +11,11 @@
       "icon": "./assets/expo.icon",
       "supportsTablet": true,
       "bundleIdentifier": "com.sparke27.mobile",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.sparke27.mobile"
+        ]
+      },
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -38,6 +43,7 @@
     },
     "plugins": [
       "./plugins/withCleartextTraffic",
+      "./plugins/withIosWidget",
       "expo-router",
       "expo-notifications",
       [
@@ -88,14 +94,14 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/31ecbb9a-1525-4297-9bfb-24d882b91902",
+      "url": "https://u.expo.dev/1ad23d4b-18a4-4321-82d1-7dc0bbce0589",
       "checkAutomatically": "ON_LOAD",
       "fallbackToCacheTimeout": 0
     },
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "31ecbb9a-1525-4297-9bfb-24d882b91902"
+        "projectId": "1ad23d4b-18a4-4321-82d1-7dc0bbce0589"
       }
     }
   }

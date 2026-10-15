@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Task } from '@/app/tasks';
 import { getLocalDateString, getTaskLocalDateString } from '@/utils/timezone';
@@ -214,6 +214,19 @@ export async function saveWidgetSnapshotAsync(
       writes.push(AsyncStorage.setItem(getWidgetStorageKey(effectiveInstallationId), jsonString));
     }
     await Promise.all(writes);
+
+    // Persist to native Android SharedPreferences via native bridge
+    if (Platform.OS === 'android') {
+      try {
+        const { StockFlowWidgetBridge } = NativeModules;
+        if (StockFlowWidgetBridge?.setWidgetSnapshot) {
+          await StockFlowWidgetBridge.setWidgetSnapshot(jsonString);
+        }
+      } catch (bridgeErr) {
+        console.warn('[WidgetData] Native bridge save notice:', bridgeErr);
+      }
+    }
+
     return true;
   } catch (error) {
     console.warn('[WidgetData] Failed to serialize or save widget snapshot:', error);
@@ -320,32 +333,17 @@ export async function syncWidgetDataAsync(
     console.warn('[WidgetSync] Failed to persist snapshot:', saveError);
   }
 
-  // 2. On Android, request widget redraw via native bridge for both Today and Upcoming widgets
-  if (Platform.OS === 'android') {
+  // 2. On Android and iOS, refresh native home-screen widgets via native bridge
+  if (Platform.OS === 'android' || Platform.OS === 'ios') {
     try {
-      const React = require('react');
-      const { requestWidgetUpdate } = require('react-native-android-widget');
-      const { StockFlowTasksWidget } = require('@/widgets/StockFlowTasksWidget');
-      const { StockFlowUpcomingWidget } = require('@/widgets/StockFlowUpcomingWidget');
-
-      // Update Today Widget
-      await requestWidgetUpdate({
-        widgetName: WIDGET_NAME,
-        renderWidget: () =>
-          React.createElement(StockFlowTasksWidget, { data: widgetData }),
-        widgetNotFound: () => {},
-      });
-
-      // Update Upcoming Widget
-      await requestWidgetUpdate({
-        widgetName: UPCOMING_WIDGET_NAME,
-        renderWidget: () =>
-          React.createElement(StockFlowUpcomingWidget, { data: widgetData }),
-        widgetNotFound: () => {},
-      });
-
+      const { StockFlowWidgetBridge } = NativeModules;
+      if (StockFlowWidgetBridge?.setWidgetSnapshot) {
+        await StockFlowWidgetBridge.setWidgetSnapshot(JSON.stringify(widgetData));
+      } else if (StockFlowWidgetBridge?.refreshWidgets) {
+        await StockFlowWidgetBridge.refreshWidgets();
+      }
       console.log(
-        `[WidgetSync] Native widgets updated: Today (${widgetData.today.completed}/${widgetData.today.total}) · Upcoming 7D (${widgetData.upcoming7Days?.total ?? 0})`
+        `[WidgetSync] Native widgets updated for ${Platform.OS}: Today (${widgetData.today.completed}/${widgetData.today.total}) · Upcoming 7D (${widgetData.upcoming7Days?.total ?? 0})`
       );
     } catch (widgetError) {
       console.warn('[WidgetSync] Native widget redraw skipped or failed:', widgetError);
@@ -356,54 +354,23 @@ export async function syncWidgetDataAsync(
 }
 
 /**
- * Refreshes the native Android home-screen widget from the existing local cached snapshot.
+ * Refreshes the native Android and iOS home-screen widgets from the existing local cached snapshot.
  * Safe to call on app startup and on AppState transitions without hitting the network or recalculating tasks.
  */
 export async function refreshWidgetFromSnapshotAsync(
   installationId?: string
 ): Promise<boolean> {
-  if (Platform.OS !== 'android') {
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
     return false;
   }
 
   try {
-    const snapshot = await loadWidgetSnapshotAsync(installationId);
-    let isStale = false;
-
-    if (snapshot && snapshot.updatedAt) {
-      const snapshotDate = getLocalDateString(new Date(snapshot.updatedAt));
-      const todayDate = getLocalDateString(new Date());
-      isStale = snapshotDate !== todayDate;
+    const { StockFlowWidgetBridge } = NativeModules;
+    if (StockFlowWidgetBridge?.refreshWidgets) {
+      await StockFlowWidgetBridge.refreshWidgets();
+      return true;
     }
-
-    const React = require('react');
-    const { requestWidgetUpdate } = require('react-native-android-widget');
-    const { StockFlowTasksWidget } = require('@/widgets/StockFlowTasksWidget');
-    const { StockFlowUpcomingWidget } = require('@/widgets/StockFlowUpcomingWidget');
-
-    // Refresh Today Widget
-    await requestWidgetUpdate({
-      widgetName: WIDGET_NAME,
-      renderWidget: () =>
-        React.createElement(StockFlowTasksWidget, {
-          data: snapshot,
-          isStale,
-        }),
-      widgetNotFound: () => {},
-    });
-
-    // Refresh Upcoming Widget
-    await requestWidgetUpdate({
-      widgetName: UPCOMING_WIDGET_NAME,
-      renderWidget: () =>
-        React.createElement(StockFlowUpcomingWidget, {
-          data: snapshot,
-          isStale,
-        }),
-      widgetNotFound: () => {},
-    });
-
-    return true;
+    return false;
   } catch (error) {
     console.warn('[WidgetData] Failed to refresh widget from snapshot:', error);
     return false;
