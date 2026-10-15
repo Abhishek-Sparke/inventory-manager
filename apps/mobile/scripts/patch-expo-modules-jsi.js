@@ -76,7 +76,24 @@ if (fs.existsSync(retainedTarget)) {
   }
 }
 
-// 2c. HostFunctionClosure.h (make it a value type without virtual destructor so Swift can construct it)
+// 2c. HostObjectCallbacks.h (add addPropNameId helper to avoid Swift C++ move-only vector push_back issue)
+const hostObjTarget = path.join(appleDir, 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'HostObjectCallbacks.h');
+if (fs.existsSync(hostObjTarget)) {
+  let content = fs.readFileSync(hostObjTarget, 'utf8');
+  if (!content.includes('addPropNameId')) {
+    content = content.replace(
+      'using Deallocator = void(Context);',
+      `using Deallocator = void(Context);
+  inline static void addPropNameId(PropNameIds &vector, facebook::jsi::IRuntime &runtime, const std::string &name) {
+    vector.push_back(facebook::jsi::PropNameID::forUtf8(runtime, name));
+  }`
+    );
+    fs.writeFileSync(hostObjTarget, content, 'utf8');
+    console.log('✓ Patched HostObjectCallbacks.h with addPropNameId helper');
+  }
+}
+
+// 2d. HostFunctionClosure.h (make it a value type with a factory create method returning a heap pointer)
 const hostFuncTarget = path.join(appleDir, 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'HostFunctionClosure.h');
 if (fs.existsSync(hostFuncTarget)) {
   let content = fs.readFileSync(hostFuncTarget, 'utf8');
@@ -99,6 +116,10 @@ public:
 
   ~HostFunctionClosure() {
     _deallocator(_context);
+  }
+
+  static inline HostFunctionClosure* _Nonnull create(Context context, Closure closure, Deallocator deallocator) {
+    return new HostFunctionClosure(context, closure, deallocator);
   }
 
   inline bool call(const facebook::jsi::Value &thisValue, const facebook::jsi::Value *_Nonnull args, size_t count, facebook::jsi::Value &result) const {
@@ -206,10 +227,33 @@ if (fs.existsSync(sourcesDir)) {
           }
         }
 
-        // Fix 3g: JavaScriptRuntime.swift: remove extraneous 'consuming:' argument label from vector.push_back
+        // Fix 3g: JavaScriptRuntime.swift:
+        // - use expo.HostObjectCallbacks.addPropNameId
+        // - update createFunctionClosure to return UnsafeMutablePointer<expo.HostFunctionClosure>
         if (entry.name === 'JavaScriptRuntime.swift') {
-          if (content.includes('vector.push_back(consuming: propNameId)')) {
-            content = content.replace('vector.push_back(consuming: propNameId)', 'vector.push_back(propNameId)');
+          if (content.includes('vector.push_back(')) {
+            content = content.replace(
+              /for propertyName in propertyNames \{[\s\S]*?vector\.push_back\(.*?\)[\s\S]*?\}/m,
+              `for propertyName in propertyNames {
+        expo.HostObjectCallbacks.addPropNameId(&vector, iRuntime, std.string(propertyName))
+      }`
+            );
+            modified = true;
+          }
+
+          if (content.includes(') -> expo.HostFunctionClosure {')) {
+            content = content.replace(
+              /\) -> expo\.HostFunctionClosure \{/g,
+              ') -> UnsafeMutablePointer<expo.HostFunctionClosure> {'
+            );
+            modified = true;
+          }
+
+          if (content.includes('return expo.HostFunctionClosure(context, call, deallocate)')) {
+            content = content.replace(
+              /return expo\.HostFunctionClosure\(context, call, deallocate\)/g,
+              'return expo.HostFunctionClosure.create(context, call, deallocate)'
+            );
             modified = true;
           }
         }
