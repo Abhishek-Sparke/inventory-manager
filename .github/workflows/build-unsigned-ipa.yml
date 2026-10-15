@@ -87,7 +87,6 @@ jobs:
             -target StockFlowWidgetExtension \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath build \
             CONFIGURATION_BUILD_DIR="$PWD/build/Build/Products/Release-iphoneos" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
