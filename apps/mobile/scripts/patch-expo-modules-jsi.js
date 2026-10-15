@@ -12,20 +12,10 @@ if (fs.existsSync(pkgTarget)) {
     changed = true;
   }
 
-  // Remove trailing commas in argument lists (Swift 6.2 syntax incompatible with Swift 6.0 in Xcode 16)
-  const patterns = [
-    [/targets:\s*\["ExpoModulesJSI"\],(\s*\))/g, 'targets: ["ExpoModulesJSI"]$1'],
-    [/(linkerSettings:\s*\[[\s\S]*?\]),(\s*\)\s*,\s*\/\/\s*C\+\+)/g, '$1$2'],
-    [/(cxxIncludeFlags\)\s*\]),(\s*\)\s*,\s*\/\/\s*Tests)/g, '$1$2'],
-    [/(path:\s*"Tests"),(\s*\)\s*,\s*\/\/\s*Benchmarks)/g, '$1$2'],
-    [/(path:\s*"Benchmarks"),(\s*\)\s*,\s*\])/g, '$1$2']
-  ];
-
-  for (const [pattern, replacement] of patterns) {
-    if (pattern.test(content)) {
-      content = content.replace(pattern, replacement);
-      changed = true;
-    }
+  // Remove trailing commas before closing parentheses (Swift 6.2 syntax incompatible with Swift 6.0 in Xcode 16)
+  if (/,[ \t]*\r?\n[ \t]*\)/.test(content)) {
+    content = content.replace(/,[ \t]*(\r?\n[ \t]*\))/g, '$1');
+    changed = true;
   }
 
   if (changed) {
