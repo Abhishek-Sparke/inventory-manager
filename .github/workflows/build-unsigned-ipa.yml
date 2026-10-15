@@ -72,7 +72,7 @@ jobs:
           set -o pipefail
           xcodebuild build \
             -workspace ios/mobile.xcworkspace \
-            -target StockFlowWidgetExtension \
+            -scheme StockFlowWidgetExtension \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
