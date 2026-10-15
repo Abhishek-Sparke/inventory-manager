@@ -48,7 +48,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "node ./scripts/test-scenarios.js && node ./scripts/test-widget.js"
+    "test": "node ./scripts/test-scenarios.js && node ./scripts/test-widget.js",
+    "postinstall": "node ./scripts/patch-expo-modules-jsi.js"
   },
   "private": true
 }
