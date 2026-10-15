@@ -145,8 +145,11 @@ module.exports = function withIosWidget(config) {
         throw new Error('Could not resolve StockFlowWidget PBXGroup key');
       }
 
+      // xcode's addSourceFile third argument expects a PBXGroup section key,
+      // not a UUID. Resolve the key with findPBXGroupKey and use the source's
+      // path relative to the iOS project root.
       proj.addSourceFile(
-        'StockFlowTasksWidget.swift',
+        path.join('StockFlowWidget', 'StockFlowTasksWidget.swift'),
         { target: targetUuid },
         widgetGroupKey
       );
