@@ -98,80 +98,105 @@ module.exports = function withIosWidget(config) {
         return dangerousConfig;
       }
 
-      try {
-        const proj = xcode.project(pbxprojPath);
-        proj.parseSync();
+      console.log('[withIosWidget] Updating Xcode project:', pbxprojPath);
+      const proj = xcode.project(pbxprojPath);
+      proj.parseSync();
 
-        // Check if extension target already exists
-        const targets = proj.pbxNativeTargetSection();
-        const existingTargetUuid = Object.keys(targets).find(
-          (uuid) => targets[uuid].name === EXTENSION_TARGET_NAME || targets[uuid].name === `"${EXTENSION_TARGET_NAME}"`
+      const targets = proj.pbxNativeTargetSection();
+      const existingTargetUuid = Object.keys(targets).find(
+        (uuid) =>
+          targets[uuid].name === EXTENSION_TARGET_NAME ||
+          targets[uuid].name === `"${EXTENSION_TARGET_NAME}"`
+      );
+
+      const mainBundleId = config.ios?.bundleIdentifier || 'com.sparke27.mobile';
+      const widgetBundleId = `${mainBundleId}${BUNDLE_ID_SUFFIX}`;
+      let targetUuid = existingTargetUuid;
+
+      if (!targetUuid) {
+        console.log('[withIosWidget] Creating target:', EXTENSION_TARGET_NAME);
+        const extTarget = proj.addTarget(
+          EXTENSION_TARGET_NAME,
+          'app_extension',
+          'StockFlowWidget',
+          widgetBundleId
         );
-
-        const mainBundleId = config.ios?.bundleIdentifier || 'com.sparke27.mobile';
-        const widgetBundleId = `${mainBundleId}${BUNDLE_ID_SUFFIX}`;
-
-        if (!existingTargetUuid) {
-          // Add the App Extension target
-          const extTarget = proj.addTarget(
-            EXTENSION_TARGET_NAME,
-            'app_extension',
-            'StockFlowWidget',
-            widgetBundleId
-          );
-
-          if (extTarget && extTarget.uuid) {
-            // Add Swift source file
-            // Add the Swift file to the extension target. Let xcode choose
-            // the default group; a guessed PBXGroup key can throw and prevent
-            // project.pbxproj from being written at all.
-            proj.addSourceFile(
-              path.join('StockFlowWidget', 'StockFlowTasksWidget.swift'),
-              { target: extTarget.uuid }
-            );
-
-            // Add Frameworks
-            proj.addFramework('WidgetKit.framework', { target: extTarget.uuid });
-            proj.addFramework('SwiftUI.framework', { target: extTarget.uuid });
-
-            // Configure Build Settings for Debug & Release
-            const configurations = proj.pbxXCBuildConfigurationSection();
-            for (const configId in configurations) {
-              const buildConfig = configurations[configId];
-              if (
-                buildConfig.buildSettings &&
-                buildConfig.buildSettings.PRODUCT_NAME === `"${EXTENSION_TARGET_NAME}"`
-              ) {
-                buildConfig.buildSettings.SWIFT_VERSION = '5.0';
-                buildConfig.buildSettings.IPHONEOS_DEPLOYMENT_TARGET = '16.0';
-                buildConfig.buildSettings.PRODUCT_BUNDLE_IDENTIFIER = `"${widgetBundleId}"`;
-                buildConfig.buildSettings.INFOPLIST_FILE = '"StockFlowWidget/Info.plist"';
-                buildConfig.buildSettings.CODE_SIGN_ENTITLEMENTS = '"StockFlowWidget/StockFlowWidget.entitlements"';
-                buildConfig.buildSettings.CURRENT_PROJECT_VERSION = '"1"';
-                buildConfig.buildSettings.MARKETING_VERSION = '"1.0.0"';
-                buildConfig.buildSettings.TARGETED_DEVICE_FAMILY = '"1,2"';
-                buildConfig.buildSettings.CODE_SIGN_STYLE = 'Automatic';
-              }
-            }
-          }
-        }
-
-        // Add Bridge files to main app target if not already added
-        if (targetMainAppDir) {
-          const mainTarget = proj.getFirstTarget();
-          const mainTargetUuid = mainTarget?.uuid;
-          if (mainTargetUuid) {
-            const bridgeM = path.join(path.basename(targetMainAppDir), 'StockFlowWidgetBridge.m');
-            proj.addSourceFile(bridgeM, { target: mainTargetUuid });
-            const bridgeH = path.join(path.basename(targetMainAppDir), 'StockFlowWidgetBridge.h');
-            proj.addHeaderFile(bridgeH, { target: mainTargetUuid });
-          }
-        }
-
-        fs.writeFileSync(pbxprojPath, proj.writeSync());
-      } catch (err) {
-        console.warn('[withIosWidget] Notice: PBXProject update will finalize during cloud build:', err.message);
+        targetUuid = extTarget?.uuid;
       }
+
+      if (!targetUuid) {
+        throw new Error(`xcode package did not create target ${EXTENSION_TARGET_NAME}`);
+      }
+
+      // Create a real PBXGroup for the Swift source instead of passing a guessed
+      // group name. A failed addSourceFile previously prevented project.pbxproj
+      // from being written, which left the extension target missing in CI.
+      const groups = proj.hash.project.objects.PBXGroup || {};
+      let widgetGroup = Object.values(groups).find(
+        (group) =>
+          group &&
+          typeof group === 'object' &&
+          (group.name === 'StockFlowWidget' || group.name === '"StockFlowWidget"')
+      );
+
+      if (!widgetGroup) {
+        widgetGroup = proj.addPbxGroup([], 'StockFlowWidget', 'StockFlowWidget');
+        const mainGroupUuid = proj.getFirstProject()?.firstProject?.mainGroup;
+        if (!mainGroupUuid) {
+          throw new Error('Could not locate Xcode main PBXGroup');
+        }
+        proj.addToPbxGroup(widgetGroup.uuid, mainGroupUuid);
+      }
+
+      proj.addSourceFile(
+        'StockFlowTasksWidget.swift',
+        { target: targetUuid },
+        widgetGroup.uuid
+      );
+      proj.addFramework('WidgetKit.framework', { target: targetUuid });
+      proj.addFramework('SwiftUI.framework', { target: targetUuid });
+
+      const configurations = proj.pbxXCBuildConfigurationSection();
+      for (const configId in configurations) {
+        const buildConfig = configurations[configId];
+        const productName = String(buildConfig.buildSettings?.PRODUCT_NAME || '').replace(/"/g, '');
+        if (productName === EXTENSION_TARGET_NAME) {
+          buildConfig.buildSettings.SWIFT_VERSION = '5.0';
+          buildConfig.buildSettings.IPHONEOS_DEPLOYMENT_TARGET = '16.0';
+          buildConfig.buildSettings.PRODUCT_BUNDLE_IDENTIFIER = `"${widgetBundleId}"`;
+          buildConfig.buildSettings.INFOPLIST_FILE = '"StockFlowWidget/Info.plist"';
+          buildConfig.buildSettings.CODE_SIGN_ENTITLEMENTS = '"StockFlowWidget/StockFlowWidget.entitlements"';
+          buildConfig.buildSettings.CURRENT_PROJECT_VERSION = '"1"';
+          buildConfig.buildSettings.MARKETING_VERSION = '"1.0.0"';
+          buildConfig.buildSettings.TARGETED_DEVICE_FAMILY = '"1,2"';
+          buildConfig.buildSettings.CODE_SIGN_STYLE = 'Automatic';
+          buildConfig.buildSettings.GENERATE_INFOPLIST_FILE = 'NO';
+          buildConfig.buildSettings.SKIP_INSTALL = 'YES';
+        }
+      }
+
+      // Add bridge files to the app target.
+      if (targetMainAppDir) {
+        const mainTarget = proj.getFirstTarget();
+        const mainTargetUuid = mainTarget?.uuid;
+        if (mainTargetUuid) {
+          proj.addSourceFile(
+            path.join(path.basename(targetMainAppDir), 'StockFlowWidgetBridge.m'),
+            { target: mainTargetUuid }
+          );
+          proj.addHeaderFile(
+            path.join(path.basename(targetMainAppDir), 'StockFlowWidgetBridge.h'),
+            { target: mainTargetUuid }
+          );
+        }
+      }
+
+      fs.writeFileSync(pbxprojPath, proj.writeSync());
+      const savedProject = fs.readFileSync(pbxprojPath, 'utf8');
+      if (!savedProject.includes(EXTENSION_TARGET_NAME)) {
+        throw new Error(`Saved project is missing ${EXTENSION_TARGET_NAME}`);
+      }
+      console.log('[withIosWidget] Successfully saved widget target:', EXTENSION_TARGET_NAME);
 
       return dangerousConfig;
     },
