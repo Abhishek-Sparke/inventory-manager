@@ -27,6 +27,13 @@ import {
   syncInventoryAlertNotificationsAsync,
   ProductAlert,
 } from '@/services/inventory-alerts';
+import {
+  getLocalProductsAsync,
+  importProductsIntoLocalDbAsync,
+  saveLocalProductAsync,
+  updateLocalProductQuantityAsync,
+  deleteLocalProductAsync,
+} from '@/services/database';
 import { parseDateString, getLocalDateString } from '@/utils/timezone';
 import { getUserFacingErrorMessage } from '@/utils/errors';
 
@@ -245,6 +252,19 @@ export default function HomeScreen() {
     let controller: AbortController | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
+    // 1. Immediately read from local SQLite storage (instant offline load)
+    try {
+      const localList = await getLocalProductsAsync();
+      if (localList.length > 0 || products.length === 0) {
+        setProducts(localList);
+        if (localList.length > 0) {
+          setLoading(false);
+        }
+      }
+    } catch (dbErr) {
+      console.warn('[Products] SQLite initial load notice:', dbErr);
+    }
+
     try {
       console.log('StockFlow API URL:', API_URL);
 
@@ -298,7 +318,15 @@ export default function HomeScreen() {
           ? data.results
           : [];
 
-      setProducts(productList);
+      // Persist to local SQLite and update state
+      if (productList.length > 0) {
+        await importProductsIntoLocalDbAsync(productList);
+        const updated = await getLocalProductsAsync();
+        setProducts(updated);
+      } else {
+        setProducts(productList);
+      }
+
       const parseElapsed = Date.now() - parseStart;
       console.log(`[StartupTiming] Response body parsing and state updates: ${parseElapsed}ms`);
       console.log('[StartupTiming] Separate dashboard statistics requests: 0ms (derived synchronously)');
@@ -320,7 +348,13 @@ export default function HomeScreen() {
         ? 'The server is taking longer than expected. Please retry.'
         : getUserFacingErrorMessage(error);
 
-      setError(message);
+      // In offline mode with cached products, avoid full-screen disruptive error
+      const cached = await getLocalProductsAsync().catch(() => []);
+      if (cached.length === 0) {
+        setError(message);
+      } else {
+        console.log('[Products] Seamless offline fallback with', cached.length, 'cached products');
+      }
     } finally {
       if (timeoutId) {
         clearTimeout(timeoutId);
@@ -412,6 +446,8 @@ export default function HomeScreen() {
         throw new Error(message || 'Unable to add product.');
       }
 
+      await saveLocalProductAsync(data).catch(() => {});
+
       Alert.alert('Success', 'Product added successfully!');
       setForm({
         name: '',
@@ -426,6 +462,35 @@ export default function HomeScreen() {
       setShowForm(false);
       await loadProducts();
     } catch (error) {
+      try {
+        const localCreated = await saveLocalProductAsync({
+          id: 0,
+          name: form.name.trim(),
+          sku: form.sku.trim(),
+          category: form.category.trim(),
+          description: form.description.trim(),
+          price: Number(form.price),
+          quantity: Number(form.quantity),
+          reorder_level: Number(form.reorder_level),
+          expiry_date: form.expiry_date || null,
+        });
+        setProducts(previous => [...previous, localCreated]);
+        setForm({
+          name: '',
+          sku: '',
+          category: '',
+          description: '',
+          price: '',
+          quantity: '0',
+          reorder_level: '10',
+          expiry_date: '',
+        });
+        setShowForm(false);
+        Alert.alert('Saved Offline', 'Product saved locally in SQLite database.');
+        return;
+      } catch {
+        // Fall through to alert
+      }
       Alert.alert(
         'Error',
         error instanceof Error ? error.message : 'Could not add product.'
@@ -484,6 +549,8 @@ export default function HomeScreen() {
         throw new Error(JSON.stringify(data));
       }
 
+      await saveLocalProductAsync(data).catch(() => {});
+
       setProducts(previous =>
         previous.map(product =>
           product.id === editingProduct.id ? data : product
@@ -493,6 +560,28 @@ export default function HomeScreen() {
       setEditingProduct(null);
       Alert.alert('Success', 'Product updated successfully.');
     } catch (error) {
+      try {
+        const updatedLocal = await saveLocalProductAsync({
+          id: editingProduct.id,
+          name: editForm.name.trim(),
+          sku: editForm.sku.trim(),
+          category: editForm.category.trim(),
+          description: editForm.description.trim(),
+          price: Number(editForm.price),
+          quantity: Number(editForm.quantity),
+          reorder_level: Number(editForm.reorder_level),
+          expiry_date: editForm.expiry_date || null,
+        });
+        setProducts(previous =>
+          previous.map(product =>
+            product.id === editingProduct.id ? updatedLocal : product
+          )
+        );
+        setEditingProduct(null);
+        Alert.alert('Updated Offline', 'Product updated locally in SQLite database.');
+        return;
+      } catch {}
+
       Alert.alert(
         'Update failed',
         error instanceof Error ? error.message : 'Could not update product.'
@@ -525,9 +614,17 @@ export default function HomeScreen() {
                 throw new Error(`Server returned ${response.status}`);
               }
 
+              await deleteLocalProductAsync(product.id).catch(() => {});
               await loadProducts();
               Alert.alert('Deleted', 'Product removed successfully.');
             } catch (error) {
+              try {
+                await deleteLocalProductAsync(product.id);
+                setProducts(prev => prev.filter(p => p.id !== product.id));
+                Alert.alert('Deleted Offline', 'Product removed locally from SQLite.');
+                return;
+              } catch {}
+
               Alert.alert(
                 'Delete failed',
                 error instanceof Error
@@ -588,6 +685,8 @@ export default function HomeScreen() {
       const nextQuantity = Number(
         data?.quantity ?? Number(restockingProduct.quantity) + quantityToAdd
       );
+
+      await updateLocalProductQuantityAsync(restockingProduct.id, nextQuantity).catch(() => {});
 
       setProducts(previous =>
         previous.map(product =>

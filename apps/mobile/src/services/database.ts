@@ -229,12 +229,51 @@ function applyMigrations(driver: SQLiteDriver) {
         );
       `);
 
+      // 4. Products Table
+      driver.exec(`
+        CREATE TABLE IF NOT EXISTS products (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          sku TEXT NOT NULL,
+          category TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL DEFAULT '',
+          price REAL NOT NULL DEFAULT 0,
+          quantity INTEGER NOT NULL DEFAULT 0,
+          reorder_level INTEGER NOT NULL DEFAULT 10,
+          expiry_date TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+
+      driver.exec(`
+        CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+      `);
+
       driver.run(
         'INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?);',
         [1, new Date().toISOString()]
       );
     });
   }
+
+  // Ensure products table exists if running on an existing DB
+  driver.exec(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      price REAL NOT NULL DEFAULT 0,
+      quantity INTEGER NOT NULL DEFAULT 0,
+      reorder_level INTEGER NOT NULL DEFAULT 10,
+      expiry_date TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
+  `);
 }
 
 /**
@@ -763,3 +802,128 @@ export async function getAllTaskReminderRecordsAsync(): Promise<TaskReminderReco
     updated_at: String(r.updated_at),
   }));
 }
+
+// ============================================================================
+// PRODUCT CRUD OPERATIONS (Offline-First Persistence)
+// ============================================================================
+
+export interface LocalProduct {
+  id: number;
+  name: string;
+  sku: string;
+  category: string;
+  description?: string;
+  quantity: number;
+  reorder_level: number;
+  price: number | string;
+  expiry_date?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export function mapRowToProduct(row: Record<string, unknown>): LocalProduct {
+  return {
+    id: Number(row.id),
+    name: String(row.name || ''),
+    sku: String(row.sku || ''),
+    category: String(row.category || ''),
+    description: String(row.description || ''),
+    price: Number(row.price || 0),
+    quantity: Number(row.quantity || 0),
+    reorder_level: Number(row.reorder_level ?? 10),
+    expiry_date: row.expiry_date ? String(row.expiry_date) : null,
+    created_at: String(row.created_at || new Date().toISOString()),
+    updated_at: String(row.updated_at || new Date().toISOString()),
+  };
+}
+
+/**
+ * Retrieves all products from local SQLite storage.
+ */
+export async function getLocalProductsAsync(): Promise<LocalProduct[]> {
+  const db = getDatabase();
+  const rows = db.getAll<Record<string, unknown>>('SELECT * FROM products ORDER BY name ASC;');
+  return rows.map(mapRowToProduct);
+}
+
+/**
+ * Imports backend products into local SQLite database.
+ */
+export async function importProductsIntoLocalDbAsync(products: LocalProduct[]): Promise<void> {
+  if (!products || products.length === 0) return;
+  const db = getDatabase();
+  db.transaction(() => {
+    for (const p of products) {
+      db.run(
+        `INSERT OR REPLACE INTO products (id, name, sku, category, description, price, quantity, reorder_level, expiry_date, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        [
+          p.id,
+          p.name,
+          p.sku,
+          p.category || '',
+          p.description || '',
+          Number(p.price || 0),
+          Number(p.quantity || 0),
+          Number(p.reorder_level ?? 10),
+          p.expiry_date || null,
+          p.created_at || new Date().toISOString(),
+          p.updated_at || new Date().toISOString(),
+        ]
+      );
+    }
+  });
+}
+
+/**
+ * Saves or updates a single product in local SQLite storage.
+ */
+export async function saveLocalProductAsync(p: LocalProduct): Promise<LocalProduct> {
+  const db = getDatabase();
+  const now = new Date().toISOString();
+  let productId = p.id;
+  if (!productId || productId <= 0) {
+    const minRow = db.getFirst<{ minId: number | null }>('SELECT MIN(id) as minId FROM products;');
+    const minVal = minRow?.minId ?? 0;
+    productId = minVal < 0 ? minVal - 1 : -1;
+  }
+  db.run(
+    `INSERT OR REPLACE INTO products (id, name, sku, category, description, price, quantity, reorder_level, expiry_date, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+    [
+      productId,
+      p.name,
+      p.sku,
+      p.category || '',
+      p.description || '',
+      Number(p.price || 0),
+      Number(p.quantity || 0),
+      Number(p.reorder_level ?? 10),
+      p.expiry_date || null,
+      p.created_at || now,
+      now,
+    ]
+  );
+  return { ...p, id: productId };
+}
+
+/**
+ * Updates stock quantity for a product in local SQLite.
+ */
+export async function updateLocalProductQuantityAsync(id: number, quantity: number): Promise<void> {
+  const db = getDatabase();
+  db.run('UPDATE products SET quantity = ?, updated_at = ? WHERE id = ?;', [
+    quantity,
+    new Date().toISOString(),
+    id,
+  ]);
+}
+
+/**
+ * Deletes a product from local SQLite storage.
+ */
+export async function deleteLocalProductAsync(id: number): Promise<void> {
+  const db = getDatabase();
+  db.run('DELETE FROM products WHERE id = ?;', [id]);
+}
+
