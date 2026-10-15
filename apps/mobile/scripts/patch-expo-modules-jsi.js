@@ -30,6 +30,15 @@ if (fs.existsSync(pkgTarget)) {
     changed = true;
   }
 
+  // Set strict concurrency to minimal to prevent spurious actor isolation errors on Xcode 16
+  if (!content.includes('"-strict-concurrency=minimal"')) {
+    content = content.replace(
+      '"-enable-library-evolution",',
+      '"-enable-library-evolution",\n          "-Xfrontend",\n          "-strict-concurrency=minimal",'
+    );
+    changed = true;
+  }
+
   if (changed) {
     fs.writeFileSync(pkgTarget, content, 'utf8');
     console.log('✓ Patched expo-modules-jsi Package.swift for Xcode 16 / Swift 6.0 compatibility');
@@ -52,7 +61,7 @@ if (fs.existsSync(headerTarget)) {
 // - Replace 'weak let' / 'weak var' with 'nonisolated(unsafe) weak var' across all Swift files (avoids Sendable mutable stored property errors)
 // - Remove ', Escapable' protocol conformance from classes (classes are already reference types in Swift 6.0)
 // - In extension expo.CppError: Error, make 'public var message' internal (C++ structs cannot have public members in extensions with library evolution)
-// - In JavaScriptActor.swift, fix assumeIsolated runner invocation for Xcode 16 global actor isolation
+// - In JavaScriptActor.swift, use @_unsafeInheritExecutor on assumeIsolated and runIsolated for Xcode 16
 const sourcesDir = path.join(appleDir, 'Sources', 'ExpoModulesJSI');
 if (fs.existsSync(sourcesDir)) {
   function walkDir(dir) {
@@ -89,8 +98,19 @@ if (fs.existsSync(sourcesDir)) {
           modified = true;
         }
 
-        // Fix 3e: JavaScriptActor assumeIsolated runner
+        // Fix 3e: JavaScriptActor assumeIsolated and runIsolated
         if (entry.name === 'JavaScriptActor.swift') {
+          // Add @_unsafeInheritExecutor to assumeIsolated
+          if (content.includes('@_alwaysEmitIntoClient\n  @inline(__always)\n  public static func assumeIsolated') ||
+              content.includes('@_alwaysEmitIntoClient\r\n  @inline(__always)\r\n  public static func assumeIsolated')) {
+            content = content.replace(
+              /@_alwaysEmitIntoClient\r?\n\s*@inline\(__always\)\r?\n\s*public static func assumeIsolated<T: ~Copyable>/g,
+              '@_alwaysEmitIntoClient\n  @_unsafeInheritExecutor\n  @inline(__always)\n  public static func assumeIsolated<T: ~Copyable>'
+            );
+            modified = true;
+          }
+
+          // In assumeIsolated body: ensure clean return runIsolated(operation)
           if (content.includes('let runner = unsafeBitCast(runIsolated as IsolatedRunner, to: NonisolatedRunner.self)')) {
             content = content.replace(
               /let runner = unsafeBitCast\(runIsolated as IsolatedRunner, to: NonisolatedRunner\.self\)\r?\n\s*return runner\(operation\)/g,
@@ -98,11 +118,12 @@ if (fs.existsSync(sourcesDir)) {
             );
             modified = true;
           }
-          if (content.includes('@JavaScriptActor\n  @usableFromInline\n  internal static func runIsolated') ||
-              content.includes('@JavaScriptActor\r\n  @usableFromInline\r\n  internal static func runIsolated')) {
+
+          // runIsolated: use @_unsafeInheritExecutor and direct operation() call
+          if (content.includes('internal static func runIsolated<T: ~Copyable>(_ operation: @JavaScriptActor () -> T) -> T')) {
             content = content.replace(
-              /@JavaScriptActor\r?\n(\s*@usableFromInline\r?\n\s*internal static func runIsolated<T: ~Copyable>\(_ operation: @JavaScriptActor \(\) -> T\) -> T \{\r?\n\s*)return operation\(\)/g,
-              '$1typealias NonisolatedOp = () -> T\n    let fn = unsafeBitCast(operation, to: NonisolatedOp.self)\n    return fn()'
+              /(@JavaScriptActor\r?\n\s*)?(@usableFromInline\r?\n\s*)?internal static func runIsolated<T: ~Copyable>\(_ operation: @JavaScriptActor \(\) -> T\) -> T \{[\s\S]*?^\s*\}/m,
+              '@usableFromInline\n  @_unsafeInheritExecutor\n  internal static func runIsolated<T: ~Copyable>(_ operation: @JavaScriptActor () -> T) -> T {\n    return operation()\n  }'
             );
             modified = true;
           }
