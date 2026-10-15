@@ -44,6 +44,14 @@ jobs:
         run: npm ci
       - name: Generate iOS project
         run: npx expo prebuild --platform ios --no-install
+      - name: Diagnose generated widget target
+        run: |
+          echo "=== iOS project files ==="
+          find ios -maxdepth 3 \( -name "*.xcodeproj" -o -name "project.pbxproj" -o -name "StockFlowTasksWidget.swift" \) -print
+          echo "=== Widget target references ==="
+          grep -n "StockFlowWidgetExtension\|StockFlowTasksWidget.swift" ios/mobile.xcodeproj/project.pbxproj || true
+          echo "=== Xcode targets ==="
+          xcodebuild -list -project ios/mobile.xcodeproj || true
       - name: Install CocoaPods
         run: |
           cd ios
