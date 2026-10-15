@@ -1,8 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
+const appleDir = path.join(__dirname, '..', 'node_modules', 'expo-modules-jsi', 'apple');
+
 // 1. Patch Package.swift
-const pkgTarget = path.join(__dirname, '..', 'node_modules', 'expo-modules-jsi', 'apple', 'Package.swift');
+const pkgTarget = path.join(appleDir, 'Package.swift');
 if (fs.existsSync(pkgTarget)) {
   let content = fs.readFileSync(pkgTarget, 'utf8');
   let changed = false;
@@ -25,7 +27,7 @@ if (fs.existsSync(pkgTarget)) {
 }
 
 // 2. Patch RuntimeScheduler.h for Clang C++ compatibility (remove undefined SWIFT_RETURNS_RETAINED in Xcode 16)
-const headerTarget = path.join(__dirname, '..', 'node_modules', 'expo-modules-jsi', 'apple', 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'RuntimeScheduler.h');
+const headerTarget = path.join(appleDir, 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'RuntimeScheduler.h');
 if (fs.existsSync(headerTarget)) {
   let content = fs.readFileSync(headerTarget, 'utf8');
   if (content.includes('SWIFT_RETURNS_RETAINED')) {
@@ -33,4 +35,49 @@ if (fs.existsSync(headerTarget)) {
     fs.writeFileSync(headerTarget, content, 'utf8');
     console.log('✓ Patched RuntimeScheduler.h to remove SWIFT_RETURNS_RETAINED for Xcode 16 C++');
   }
+}
+
+// 3. Patch Swift sources under Sources/ExpoModulesJSI:
+// - Replace 'weak let' with 'weak var' across all Swift files (Swift 6.0 syntax requirement)
+// - Remove ', Escapable' protocol conformance from classes (classes are already reference types in Swift 6.0)
+// - In extension expo.CppError: Error, make 'public var message' internal (C++ structs cannot have public members in extensions with library evolution)
+const sourcesDir = path.join(appleDir, 'Sources', 'ExpoModulesJSI');
+if (fs.existsSync(sourcesDir)) {
+  function walkDir(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkDir(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith('.swift')) {
+        let content = fs.readFileSync(fullPath, 'utf8');
+        let modified = false;
+
+        // Fix 3a: weak let -> weak var
+        if (/\bweak\s+let\b/.test(content)) {
+          content = content.replace(/\bweak\s+let\b/g, 'weak var');
+          modified = true;
+        }
+
+        // Fix 3b: Escapable protocol conformance
+        if (content.includes(', Escapable')) {
+          content = content.replace(/,\s*Escapable\b/g, '');
+          modified = true;
+        }
+
+        // Fix 3c: extension expo.CppError: Error -> remove 'public' from member
+        if (content.includes('extension expo.CppError: Error') && content.includes('public var message: String')) {
+          content = content.replace('public var message: String', 'var message: String');
+          modified = true;
+        }
+
+        if (modified) {
+          fs.writeFileSync(fullPath, content, 'utf8');
+          console.log(`✓ Patched ${path.relative(appleDir, fullPath)} for Xcode 16 / Swift 6.0`);
+        }
+      }
+    }
+  }
+
+  walkDir(sourcesDir);
 }
