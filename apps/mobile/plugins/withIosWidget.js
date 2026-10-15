@@ -131,27 +131,24 @@ module.exports = function withIosWidget(config) {
       // Create a real PBXGroup for the Swift source instead of passing a guessed
       // group name. A failed addSourceFile previously prevented project.pbxproj
       // from being written, which left the extension target missing in CI.
-      const groups = proj.hash.project.objects.PBXGroup || {};
-      let widgetGroup = Object.values(groups).find(
-        (group) =>
-          group &&
-          typeof group === 'object' &&
-          (group.name === 'StockFlowWidget' || group.name === '"StockFlowWidget"')
-      );
-
-      if (!widgetGroup) {
-        widgetGroup = proj.addPbxGroup([], 'StockFlowWidget', 'StockFlowWidget');
-        const mainGroupUuid = proj.getFirstProject()?.firstProject?.mainGroup;
-        if (!mainGroupUuid) {
-          throw new Error('Could not locate Xcode main PBXGroup');
+      let widgetGroupKey = proj.findPBXGroupKey({ name: 'StockFlowWidget' });
+      if (!widgetGroupKey) {
+        const createdGroup = proj.addPbxGroup([], 'StockFlowWidget', 'StockFlowWidget');
+        const mainGroupKey = proj.findPBXGroupKey({ name: 'mobile' }) || proj.getFirstProject()?.firstProject?.mainGroup;
+        if (!createdGroup?.uuid || !mainGroupKey) {
+          throw new Error('Could not create or locate the StockFlowWidget PBXGroup');
         }
-        proj.addToPbxGroup(widgetGroup.uuid, mainGroupUuid);
+        proj.addToPbxGroup(createdGroup.uuid, mainGroupKey);
+        widgetGroupKey = proj.findPBXGroupKey({ name: 'StockFlowWidget' });
+      }
+      if (!widgetGroupKey) {
+        throw new Error('Could not resolve StockFlowWidget PBXGroup key');
       }
 
       proj.addSourceFile(
         'StockFlowTasksWidget.swift',
         { target: targetUuid },
-        widgetGroup.uuid
+        widgetGroupKey
       );
       proj.addFramework('WidgetKit.framework', { target: targetUuid });
       proj.addFramework('SwiftUI.framework', { target: targetUuid });
