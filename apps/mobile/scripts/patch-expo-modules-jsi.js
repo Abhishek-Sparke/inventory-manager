@@ -45,7 +45,8 @@ if (fs.existsSync(pkgTarget)) {
   }
 }
 
-// 2. Patch RuntimeScheduler.h for Clang C++ compatibility (remove undefined SWIFT_RETURNS_RETAINED in Xcode 16)
+// 2. Patch C++ headers in Sources/ExpoModulesJSI-Cxx/include
+// 2a. RuntimeScheduler.h (remove undefined SWIFT_RETURNS_RETAINED in Xcode 16)
 const headerTarget = path.join(appleDir, 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'RuntimeScheduler.h');
 if (fs.existsSync(headerTarget)) {
   let content = fs.readFileSync(headerTarget, 'utf8');
@@ -56,12 +57,69 @@ if (fs.existsSync(headerTarget)) {
   }
 }
 
+// 2b. RetainedSwiftPointer.h (remove SWIFT_IMMORTAL_REFERENCE which blocks Swift initialization)
+const retainedTarget = path.join(appleDir, 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'RetainedSwiftPointer.h');
+if (fs.existsSync(retainedTarget)) {
+  let content = fs.readFileSync(retainedTarget, 'utf8');
+  let changed = false;
+  if (content.includes('SWIFT_IMMORTAL_REFERENCE')) {
+    content = content.replace(/\s*SWIFT_IMMORTAL_REFERENCE/g, '');
+    changed = true;
+  }
+  if (content.includes('virtual ~RetainedSwiftPointer()')) {
+    content = content.replace('virtual ~RetainedSwiftPointer()', '~RetainedSwiftPointer()');
+    changed = true;
+  }
+  if (changed) {
+    fs.writeFileSync(retainedTarget, content, 'utf8');
+    console.log('✓ Patched RetainedSwiftPointer.h to remove SWIFT_IMMORTAL_REFERENCE');
+  }
+}
+
+// 2c. HostFunctionClosure.h (make it a value type without virtual destructor so Swift can construct it)
+const hostFuncTarget = path.join(appleDir, 'Sources', 'ExpoModulesJSI-Cxx', 'include', 'HostFunctionClosure.h');
+if (fs.existsSync(hostFuncTarget)) {
+  let content = fs.readFileSync(hostFuncTarget, 'utf8');
+  let changed = false;
+  if (content.includes('SWIFT_IMMORTAL_REFERENCE')) {
+    content = content.replace(/\s*SWIFT_IMMORTAL_REFERENCE/g, '');
+    changed = true;
+  }
+  if (content.includes('class HostFunctionClosure final')) {
+    content = content.replace(
+      /class HostFunctionClosure final[\s\S]*?\/\/ class HostFunctionClosure/m,
+      `class HostFunctionClosure final {
+public:
+  using Context = void *_Nonnull;
+  using Deallocator = void(Context);
+  using Closure = bool(Context context, const facebook::jsi::Value *_Nonnull thisValue, const facebook::jsi::Value *_Nonnull args, size_t count, facebook::jsi::Value *_Nonnull result);
+
+  explicit HostFunctionClosure(Context context, Closure closure, Deallocator deallocator)
+  : _context(context), _closure(closure), _deallocator(deallocator) {}
+
+  ~HostFunctionClosure() {
+    _deallocator(_context);
+  }
+
+  inline bool call(const facebook::jsi::Value &thisValue, const facebook::jsi::Value *_Nonnull args, size_t count, facebook::jsi::Value &result) const {
+    return _closure(_context, &thisValue, args, count, &result);
+  }
+
+private:
+  Context _context;
+  Closure *_Nonnull _closure;
+  Deallocator *_Nonnull _deallocator;
+}; // class HostFunctionClosure`
+    );
+    changed = true;
+  }
+  if (changed) {
+    fs.writeFileSync(hostFuncTarget, content, 'utf8');
+    console.log('✓ Patched HostFunctionClosure.h for Swift C++ constructor accessibility');
+  }
+}
+
 // 3. Patch Swift sources under Sources/ExpoModulesJSI:
-// - Strip trailing commas before closing parens in all Swift files (SE-0431 is Swift 6.2+ only)
-// - Replace 'weak let' / 'weak var' with 'nonisolated(unsafe) weak var' across all Swift files (avoids Sendable mutable stored property errors)
-// - Remove ', Escapable' protocol conformance from classes (classes are already reference types in Swift 6.0)
-// - In extension expo.CppError: Error, make 'public var message' internal (C++ structs cannot have public members in extensions with library evolution)
-// - In JavaScriptActor.swift, replace actor-isolated runner with non-isolated _rawRun to avoid actor isolation errors
 const sourcesDir = path.join(appleDir, 'Sources', 'ExpoModulesJSI');
 if (fs.existsSync(sourcesDir)) {
   function walkDir(dir) {
@@ -98,9 +156,8 @@ if (fs.existsSync(sourcesDir)) {
           modified = true;
         }
 
-        // Fix 3e: JavaScriptActor assumeIsolated and runIsolated
+        // Fix 3e: JavaScriptActor assumeIsolated and _rawRun
         if (entry.name === 'JavaScriptActor.swift') {
-          // Remove any invalid @_unsafeInheritExecutor attributes from previous edits
           if (content.includes('@_unsafeInheritExecutor')) {
             content = content.replace(/@_unsafeInheritExecutor\r?\n\s*/g, '');
             modified = true;
@@ -134,6 +191,25 @@ if (fs.existsSync(sourcesDir)) {
     return op()
   }`
             );
+            modified = true;
+          }
+        }
+
+        // Fix 3f: Task+immediate.swift: use standard Task(priority: .high, operation: operation)
+        if (entry.name === 'Task+immediate.swift') {
+          if (content.includes('Task.immediate') || content.includes('name: name')) {
+            content = content.replace(
+              /if #available[\s\S]*?return Task\(name: name, priority: \.high, operation: operation\)\r?\n\s*\}/m,
+              'return Task(priority: .high, operation: operation)'
+            );
+            modified = true;
+          }
+        }
+
+        // Fix 3g: JavaScriptRuntime.swift: remove extraneous 'consuming:' argument label from vector.push_back
+        if (entry.name === 'JavaScriptRuntime.swift') {
+          if (content.includes('vector.push_back(consuming: propNameId)')) {
+            content = content.replace('vector.push_back(consuming: propNameId)', 'vector.push_back(propNameId)');
             modified = true;
           }
         }
