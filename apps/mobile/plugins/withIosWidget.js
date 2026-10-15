@@ -151,14 +151,14 @@ module.exports = function withIosWidget(config) {
       // Resolve main application group and widget PBXGroup
       const firstTarget = proj.getFirstTarget();
       const firstTargetName = (firstTarget?.firstTarget?.name || firstTarget?.name || '').replace(/"/g, '');
-      const mainAppFolderName = targetMainAppDir ? path.basename(targetMainAppDir) : 'mobile';
+      const mainAppGroupName = targetMainAppDir ? path.basename(targetMainAppDir) : 'mobile';
       const rootMainGroupKey = proj.getFirstProject()?.firstProject?.mainGroup;
 
       const mainAppGroupKey =
         (firstTargetName ? proj.findPBXGroupKey({ name: firstTargetName }) : null) ||
         (firstTargetName ? proj.findPBXGroupKey({ path: firstTargetName }) : null) ||
-        proj.findPBXGroupKey({ name: mainAppFolderName }) ||
-        proj.findPBXGroupKey({ path: mainAppFolderName }) ||
+        proj.findPBXGroupKey({ name: mainAppGroupName }) ||
+        proj.findPBXGroupKey({ path: mainAppGroupName }) ||
         rootMainGroupKey;
 
       let widgetGroupKey = proj.findPBXGroupKey({ name: 'StockFlowWidget' });
