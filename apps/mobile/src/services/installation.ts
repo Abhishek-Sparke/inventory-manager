@@ -199,6 +199,7 @@ export async function bootstrapInstallationAsync(
   }, timeoutMs);
 
   try {
+    console.log(`[InstallationDiagnostic] Initiating workspace bootstrap at: ${INSTALLATION_BOOTSTRAP_API_URL}`);
     const response = await fetch(INSTALLATION_BOOTSTRAP_API_URL, {
       method: 'POST',
       headers: {
@@ -213,6 +214,7 @@ export async function bootstrapInstallationAsync(
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
+      console.warn(`[InstallationDiagnostic] Bootstrap endpoint returned HTTP ${response.status}: ${errText}`);
       const err = new Error(`Installation bootstrap failed (HTTP ${response.status}): ${errText}`);
       (err as any).status = response.status;
       (err as any).responseBody = errText;
@@ -239,8 +241,10 @@ export async function bootstrapInstallationAsync(
     const elapsed = Date.now() - startMs;
     console.log(`[StartupTiming] Installation bootstrap: ${elapsed}ms`);
     console.log(`[Installation] Successfully bootstrapped workspace: ${creds.installationId}`);
+    console.log(`[InstallationDiagnostic] Stored credentials securely for installation: ${creds.installationId}`);
     return creds;
   } catch (err) {
+    console.error('[InstallationDiagnostic] Bootstrap failure:', err);
     const isTimeout =
       didTimeout ||
       controller.signal.aborted ||

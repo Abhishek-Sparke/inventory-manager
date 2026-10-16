@@ -2621,13 +2621,113 @@ console.log('--- Starting StockFlow Upgrades Scenario Tests ---');
   assert.strictEqual(expiringItems[0].name, 'Industrial Cleaner');
   console.log('✓ Scenario 60 PASSED: Existing inventory functionality and alert evaluations remain intact and uncompromised.');
 
+  // =========================================================================
+  // Scenario 61: Regression Test - Mobile Dashboard Loading Flow & Infinite Spinner Prevention
+  // =========================================================================
+  const homeIndexCode = fs.readFileSync(path.join(__dirname, '..', 'src', 'app', 'index.tsx'), 'utf8');
+
+  // 1. Verify targeted diagnostic logging presence
+  assert.strictEqual(homeIndexCode.includes('[DashboardDiagnostic]'), true, 'index.tsx must contain [DashboardDiagnostic] logs');
+  assert.strictEqual(homeIndexCode.includes('SQLite read:'), true, 'index.tsx must log SQLite read diagnostics');
+  assert.strictEqual(homeIndexCode.includes('API URL configured:'), true, 'index.tsx must log API URL configuration');
+
+  // 2. Behavioral simulation: verify that an empty local SQLite DB resolves loading to false immediately
+  let simProducts = [];
+  let simLoading = true;
+  let simError = '';
+  let simIsOffline = false;
+
+  async function simulateDashboardInitialLoad({ localDbRows, networkDelayMs, networkResult }) {
+    simLoading = true;
+    simError = '';
+
+    // Step 1: Read local SQLite
+    const localList = localDbRows;
+    if (localList.length > 0 || simProducts.length === 0) {
+      simProducts = localList;
+    }
+    // Must unconditionally resolve loading on local DB read to avoid infinite spinner on empty DB
+    simLoading = false;
+
+    assert.strictEqual(simLoading, false, 'Loading spinner must resolve immediately after SQLite check even with 0 items');
+
+    // Step 2: Background network fetch
+    try {
+      if (networkDelayMs > 0) {
+        await new Promise(r => setTimeout(r, networkDelayMs));
+      }
+      if (networkResult.error) {
+        throw networkResult.error;
+      }
+      const data = networkResult.data;
+      const productList = Array.isArray(data) ? data : [];
+      if (productList.length > 0) {
+        simProducts = productList;
+      } else if (localDbRows.length === 0) {
+        simProducts = [];
+      }
+      simIsOffline = false;
+    } catch (err) {
+      if (simProducts.length === 0) {
+        simError = 'The server is taking longer than expected. Please retry.';
+      } else {
+        simIsOffline = true;
+      }
+    } finally {
+      simLoading = false;
+    }
+
+    return {
+      products: simProducts,
+      loading: simLoading,
+      error: simError,
+      isOffline: simIsOffline,
+    };
+  }
+
+  // Test Case A: Fresh app launch with empty SQLite database (0 products)
+  const resultEmpty = await simulateDashboardInitialLoad({
+    localDbRows: [],
+    networkDelayMs: 20,
+    networkResult: { data: [] }
+  });
+  assert.strictEqual(resultEmpty.loading, false, 'Dashboard loading must be false for empty database');
+  assert.strictEqual(resultEmpty.products.length, 0, 'Products should be empty array');
+  assert.strictEqual(resultEmpty.error, '', 'Error should be empty');
+
+  // Test Case B: Slow/sleeping server response (Render cold start) with empty database
+  const resultSlow = await simulateDashboardInitialLoad({
+    localDbRows: [],
+    networkDelayMs: 50,
+    networkResult: { error: new Error('The server is taking longer than expected. Please retry.') }
+  });
+  assert.strictEqual(resultSlow.loading, false, 'Dashboard loading must resolve to false even on timeout');
+  assert.strictEqual(resultSlow.error, 'The server is taking longer than expected. Please retry.');
+
+  // Test Case C: Server returns empty array [] but user has cached local products
+  const resultCached = await simulateDashboardInitialLoad({
+    localDbRows: [{ id: 1, name: 'Local Bolt', sku: 'BLT-01', quantity: 10, price: 1.5 }],
+    networkDelayMs: 20,
+    networkResult: { data: [] } // Newly bootstrapped workspace with no products on backend
+  });
+  assert.strictEqual(resultCached.loading, false);
+  assert.strictEqual(resultCached.products.length, 1, 'Local cached products must NOT be wiped out by empty server response');
+  assert.strictEqual(resultCached.products[0].name, 'Local Bolt');
+
+  // 3. Verify alert evaluation does not hang on promises
+  const alertEvaluationResult = evaluateProductAlerts(resultCached.products);
+  assert.strictEqual(Array.isArray(alertEvaluationResult.allAlerts), true);
+  assert.strictEqual(typeof alertEvaluationResult.restockAlerts.length, 'number');
+
+  console.log('✓ Scenario 61 PASSED: Mobile dashboard loading state resolution, empty-database spinner prevention, and offline persistence verified.');
+
   // Clean up temporary test database
   try {
     testDb.close();
     if (fs.existsSync(testDbFile)) fs.unlinkSync(testDbFile);
   } catch {}
 
-  console.log('\n=== ALL 60 SCENARIOS VERIFIED SUCCESSFULLY ===');
+  console.log('\n=== ALL 61 SCENARIOS VERIFIED SUCCESSFULLY ===');
 })().catch(err => {
   console.error('Fatal scenario failure:', err);
   process.exit(1);

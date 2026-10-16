@@ -342,6 +342,7 @@ export function evaluateProductAlerts(
 
   const elapsed = Date.now() - startMs;
   console.log(`[StartupTiming] Inventory alert calculation: ${elapsed}ms (${products.length} products evaluated)`);
+  console.log(`[AlertsDiagnostic] Evaluated ${products.length} products in ${elapsed}ms: ${restockAlerts.length} restock alerts, ${expiryAlerts.length} expiry alerts`);
 
   return {
     restockAlerts,

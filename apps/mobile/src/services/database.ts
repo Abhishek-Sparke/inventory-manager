@@ -843,6 +843,7 @@ export function mapRowToProduct(row: Record<string, unknown>): LocalProduct {
 export async function getLocalProductsAsync(): Promise<LocalProduct[]> {
   const db = getDatabase();
   const rows = db.getAll<Record<string, unknown>>('SELECT * FROM products ORDER BY name ASC;');
+  console.log(`[DatabaseDiagnostic] getLocalProductsAsync: read ${rows.length} rows from SQLite`);
   return rows.map(mapRowToProduct);
 }
 
@@ -852,6 +853,7 @@ export async function getLocalProductsAsync(): Promise<LocalProduct[]> {
 export async function importProductsIntoLocalDbAsync(products: LocalProduct[]): Promise<void> {
   if (!products || products.length === 0) return;
   const db = getDatabase();
+  console.log(`[DatabaseDiagnostic] importProductsIntoLocalDbAsync: importing ${products.length} products into SQLite`);
   db.transaction(() => {
     for (const p of products) {
       db.run(
