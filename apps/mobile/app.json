@@ -10,7 +10,15 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "supportsTablet": true,
-      "bundleIdentifier": "com.sparke27.mobile"
+      "bundleIdentifier": "com.sparke27.mobile",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.sparke27.mobile"
+        ]
+      },
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,12 +27,14 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "allowBackup": false,
       "predictiveBackGestureEnabled": false,
       "package": "com.sparke27.mobile",
       "permissions": [
         "RECEIVE_BOOT_COMPLETED",
         "VIBRATE",
-        "SCHEDULE_EXACT_ALARM"
+        "SCHEDULE_EXACT_ALARM",
+        "POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -33,6 +43,7 @@
     },
     "plugins": [
       "./plugins/withCleartextTraffic",
+      "./plugins/withIosWidget",
       "expo-router",
       "expo-notifications",
       [
@@ -42,7 +53,38 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
-      ]
+      ],
+      [
+        "react-native-android-widget",
+        {
+          "widgets": [
+            {
+              "name": "StockFlowTasksWidget",
+              "label": "StockFlow Tasks",
+              "minWidth": "180dp",
+              "minHeight": "110dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 2,
+              "description": "Today's task progress and upcoming tasks",
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            },
+            {
+              "name": "StockFlowUpcomingWidget",
+              "label": "StockFlow Upcoming Tasks",
+              "minWidth": "180dp",
+              "minHeight": "110dp",
+              "targetCellWidth": 4,
+              "targetCellHeight": 2,
+              "description": "Upcoming 7-day scheduled tasks",
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            }
+          ]
+        }
+      ],
+      "expo-secure-store",
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -52,14 +94,31 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/31ecbb9a-1525-4297-9bfb-24d882b91902",
+      "url": "https://u.expo.dev/1ad23d4b-18a4-4321-82d1-7dc0bbce0589",
       "checkAutomatically": "ON_LOAD",
       "fallbackToCacheTimeout": 0
     },
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "31ecbb9a-1525-4297-9bfb-24d882b91902"
+        "projectId": "1ad23d4b-18a4-4321-82d1-7dc0bbce0589",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "StockFlowWidgetExtension",
+                  "bundleIdentifier": "com.sparke27.mobile.StockFlowWidgetExtension",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.com.sparke27.mobile"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
       }
     }
   }

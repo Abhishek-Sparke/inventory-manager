@@ -1,0 +1,253 @@
+
+name: StockFlow iOS Build (Simulator & Device)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: "Select build mode"
+        required: true
+        default: simulator
+        type: choice
+        options:
+          - simulator
+          - device
+      eas_profile:
+        description: "EAS Profile (device mode only)"
+        required: false
+        default: preview
+        type: choice
+        options:
+          - preview
+          - development
+
+  push:
+    branches:
+      - main
+      - "feature/**"
+    paths:
+      - "apps/mobile/**"
+      - ".github/workflows/ios-build.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    name: Build iOS (${{ github.event.inputs.build_mode || 'simulator' }})
+    runs-on: macos-26
+
+    defaults:
+      run:
+        working-directory: apps/mobile
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Xcode
+        run: |
+          echo "=== Available Xcode versions ==="
+          ls -d /Applications/Xcode* || true
+
+          if [ -d "/Applications/Xcode_26.6.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app
+          elif [ -d "/Applications/Xcode_26.5.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.5.app
+          elif [ -d "/Applications/Xcode_26.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_26.app
+          elif ls -d /Applications/Xcode_26* >/dev/null 2>&1; then
+            LATEST_XCODE_26=$(ls -d /Applications/Xcode_26* | sort -V | tail -n 1)
+            sudo xcode-select -s "$LATEST_XCODE_26"
+          fi
+
+          xcodebuild -version
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript typecheck
+        run: npx tsc --noEmit
+
+      - name: Run native widget test suite
+        run: node scripts/test-widget.js
+
+      - name: Run iOS WidgetKit configuration unit test
+        run: node scripts/test-ios-config.js
+
+      - name: Run system regression suite
+        run: node scripts/test-scenarios.js
+
+      - name: Validate Expo configuration
+        run: npx expo config --type public
+
+      # ============================================================
+      # MODE A: STANDALONE iOS SIMULATOR BUILD
+      # ============================================================
+
+      - name: Generate iOS native project
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build standalone Release app for iOS Simulator
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        run: |
+          set -o pipefail
+
+          xcodebuild \
+            -workspace ios/mobile.xcworkspace \
+            -scheme mobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build 2>&1 | tee xcodebuild-simulator.log
+
+      - name: Verify and package simulator app
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        run: |
+          set -euo pipefail
+
+          APP_PATH="build/Build/Products/Release-iphonesimulator/mobile.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Simulator app not found at $APP_PATH"
+            find build -name "*.app" -print || true
+            exit 1
+          fi
+
+          echo "=== Checking app bundle ==="
+          ls -la "$APP_PATH"
+
+          if [ ! -f "$APP_PATH/main.jsbundle" ]; then
+            echo "::error::main.jsbundle is missing. The JavaScript bundle may not have been embedded."
+            echo "Inspecting likely bundle files:"
+            find "$APP_PATH" -maxdepth 2 -iname "*bundle*" -print || true
+            exit 1
+          fi
+
+          echo "Standalone JavaScript bundle found."
+
+          echo "=== Verifying Embedded WidgetKit Extension ==="
+
+          if [ ! -d "$APP_PATH/PlugIns/StockFlowWidgetExtension.appex" ]; then
+            echo "::error::StockFlowWidgetExtension.appex was not embedded in mobile.app/PlugIns/"
+            exit 1
+          fi
+
+          ls -la "$APP_PATH/PlugIns/StockFlowWidgetExtension.appex"
+
+          node scripts/verify-ipa.js "$APP_PATH"
+
+          cd build/Build/Products/Release-iphonesimulator
+          zip -r -y ../../../../StockFlow-iOS-Simulator.zip mobile.app
+
+          cd ../../../..
+          ls -lh StockFlow-iOS-Simulator.zip
+
+      - name: Upload iOS Simulator Build Artifact
+        if: ${{ github.event.inputs.build_mode != 'device' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFlow-iOS-Simulator
+          path: apps/mobile/StockFlow-iOS-Simulator.zip
+          retention-days: 14
+
+      # ============================================================
+      # MODE B: UNSIGNED PHYSICAL-DEVICE IPA BUILD
+      # This produces an unsigned IPA artifact. It is not directly
+      # installable on a physical iPhone until properly signed.
+      # ============================================================
+
+      - name: Build standalone Release app for physical iOS device (unsigned)
+        if: ${{ github.event.inputs.build_mode == 'device' }}
+        run: |
+          set -o pipefail
+
+          xcodebuild \
+            -workspace ios/mobile.xcworkspace \
+            -scheme mobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build-device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build 2>&1 | tee xcodebuild-device.log
+
+      - name: Package and verify unsigned physical-device IPA
+        if: ${{ github.event.inputs.build_mode == 'device' }}
+        run: |
+          set -euo pipefail
+
+          APP_PATH="build-device/Build/Products/Release-iphoneos/mobile.app"
+          IPA_PATH="StockFlow-unsigned.ipa"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Device app not found at $APP_PATH"
+            find build-device -name "*.app" -print || true
+            exit 1
+          fi
+
+          if [ ! -f "$APP_PATH/main.jsbundle" ]; then
+            echo "::error::main.jsbundle is missing from the device app."
+            find "$APP_PATH" -maxdepth 2 -iname "*bundle*" -print || true
+            exit 1
+          fi
+
+          EXT_PATH="$APP_PATH/PlugIns/StockFlowWidgetExtension.appex"
+          if [ ! -d "$EXT_PATH" ]; then
+            echo "::error::StockFlowWidgetExtension.appex was not embedded in the device app."
+            find "$APP_PATH" -maxdepth 4 -name "*.appex" -print || true
+            exit 1
+          fi
+
+          mkdir -p ipa-staging/Payload
+          cp -R "$APP_PATH" ipa-staging/Payload/mobile.app
+          (cd ipa-staging && /usr/bin/zip -qry "../$IPA_PATH" Payload)
+
+          echo "=== Unsigned IPA created ==="
+          ls -lh "$IPA_PATH"
+          node scripts/verify-ipa.js "$IPA_PATH"
+
+      - name: Upload unsigned physical-device IPA
+        if: ${{ github.event.inputs.build_mode == 'device' && success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFlow-iOS-Unsigned-IPA
+          path: apps/mobile/StockFlow-unsigned.ipa
+          retention-days: 14
+
+      # ============================================================
+      # LOG ARCHIVING ON FAILURE
+      # ============================================================
+
+      - name: Archive compilation logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-failure-logs
+          path: |
+            apps/mobile/xcodebuild-simulator.log
+            apps/mobile/xcodebuild-device.log
+            apps/mobile/build/Logs/
+            apps/mobile/build-device/Logs/
+          retention-days: 7

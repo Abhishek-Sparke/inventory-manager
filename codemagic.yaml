@@ -1,0 +1,93 @@
+
+workflows:
+  ios-release:
+    name: Flutter iOS Release
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+
+    working_directory: apps/flutter_mobile
+
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      groups:
+        - apple_credentials
+      vars:
+        XCODE_WORKSPACE: "ios/Runner.xcworkspace"
+        XCODE_SCHEME: "Runner"
+        BUNDLE_ID: "com.sparke27.stockflowMobile"
+
+    triggering:
+      events:
+        - push
+        - tag
+        - pull_request
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+        - pattern: feature/*
+          include: true
+          source: true
+
+    scripts:
+      - name: Verify environment and tools
+        script: |
+          set -e
+          echo "Working directory: $(pwd)"
+          flutter --version
+          xcodebuild -version
+
+      - name: Get Flutter packages
+        script: |
+          set -e
+          flutter pub get
+
+      - name: Install CocoaPods dependencies
+        script: |
+          set -e
+          cd ios
+          pod install
+          cd ..
+
+      - name: Flutter analyze and unit tests
+        script: |
+          set -e
+          flutter analyze
+          flutter test
+
+      - name: Configure iOS code signing
+        script: |
+          set -e
+          xcode-project use-profiles
+
+      - name: Build signed iOS IPA
+        script: |
+          set -e
+          flutter build ipa --release
+
+      - name: Verify IPA
+        script: |
+          set -e
+          IPA_FILE="$(find build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print -quit)"
+          if [ -z "$IPA_FILE" ]; then
+            echo "ERROR: No IPA was generated."
+            exit 1
+          fi
+          echo "IPA generated successfully:"
+          ls -lh "$IPA_FILE"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/iphoneos/*.app
+      - /Users/builder/Library/Developer/Xcode/Archives/*/*.xcarchive
+      - flutter_drive.log
+
+    publishing:
+      email:
+        recipients:
+          - 934406abhishek@gmail.com
+        notify:
+          success: true
+          failure: true

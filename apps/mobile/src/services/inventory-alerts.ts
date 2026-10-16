@@ -268,6 +268,7 @@ export function evaluateProductAlerts(
   expiryAlerts: ProductAlert[];
   allAlerts: ProductAlert[];
 } {
+  const startMs = Date.now();
   const todayStr = getLocalDateString();
   const todayDate = new Date(todayStr + 'T00:00:00');
 
@@ -338,6 +339,10 @@ export function evaluateProductAlerts(
       }
     }
   }
+
+  const elapsed = Date.now() - startMs;
+  console.log(`[StartupTiming] Inventory alert calculation: ${elapsed}ms (${products.length} products evaluated)`);
+  console.log(`[AlertsDiagnostic] Evaluated ${products.length} products in ${elapsed}ms: ${restockAlerts.length} restock alerts, ${expiryAlerts.length} expiry alerts`);
 
   return {
     restockAlerts,
