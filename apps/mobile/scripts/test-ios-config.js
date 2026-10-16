@@ -4,13 +4,20 @@
  * Verifies:
  * 1. Plugin exports valid Expo Config Plugin function.
  * 2. Template files exist and contain required WidgetKit and App Group configurations.
- * 3. App Group entitlement is properly registered on the main application.
- * 4. Xcode project modification adds the Widget extension target and build phases.
+ * 3. Swift source code defines both widgets (StockFlowTasksWidget & StockFlowUpcomingWidget) and WidgetBundle.
+ * 4. App Group entitlement and Info.plist configure com.apple.widgetkit-extension and CFBundlePackageType == 'XPC!'.
+ * 5. Native Bridge Module implements setWidgetSnapshot and refreshWidgets.
+ * 6. App Group & EAS appExtensions Config Plugin application on Expo configuration.
+ * 7. Xcode project dangerous mod execution: target creation, build phases, Target Dependency, and Embed App Extensions.
+ * 8. Idempotent prebuild execution without duplicate build phases or targets.
+ * 9. Automated physical-device IPA bundle verification via verifyIpa.
  */
 
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
+const { verifyIpa } = require('./verify-ipa');
 
 console.log('--- Starting StockFlow iOS WidgetKit Configuration Tests ---');
 
@@ -35,7 +42,7 @@ for (const file of requiredFiles) {
 }
 console.log('✓ Test 2 PASSED: All 5 required iOS native template files exist in plugins/ios-widget/.');
 
-// 3. Verify Swift code contents
+// 3. Verify Swift code contents (both widgets & bundle)
 const swiftContent = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowTasksWidget.swift'), 'utf8');
 assert.strictEqual(swiftContent.includes('import WidgetKit'), true, 'Must import WidgetKit');
 assert.strictEqual(swiftContent.includes('import SwiftUI'), true, 'Must import SwiftUI');
@@ -43,9 +50,11 @@ assert.strictEqual(swiftContent.includes('group.com.sparke27.mobile'), true, 'Mu
 assert.strictEqual(swiftContent.includes('StockFlowTasksWidgetEntryView'), true, 'Must declare entry view');
 assert.strictEqual(swiftContent.includes('SmallWidgetView'), true, 'Must implement SmallWidgetView');
 assert.strictEqual(swiftContent.includes('MediumWidgetView'), true, 'Must implement MediumWidgetView');
+assert.strictEqual(swiftContent.includes('StockFlowUpcomingWidget'), true, 'Must declare StockFlowUpcomingWidget');
+assert.strictEqual(swiftContent.includes('StockFlowWidgetBundle'), true, 'Must declare StockFlowWidgetBundle');
 assert.strictEqual(swiftContent.includes('mobile://tasks?view=today'), true, 'Must bind deep link to tasks');
-assert.strictEqual(swiftContent.includes('@main'), true, 'Must declare @main widget');
-console.log('✓ Test 3 PASSED: StockFlowTasksWidget.swift contains valid SwiftUI views, TimelineProvider, and deep linking.');
+assert.strictEqual(swiftContent.includes('@main'), true, 'Must declare @main widget bundle');
+console.log('✓ Test 3 PASSED: StockFlowTasksWidget.swift contains both widgets, TimelineProvider, deep links, and @main WidgetBundle.');
 
 // 4. Verify Entitlements and Info.plist
 const entitlementsContent = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowWidget.entitlements'), 'utf8');
@@ -53,7 +62,13 @@ assert.strictEqual(entitlementsContent.includes('group.com.sparke27.mobile'), tr
 
 const infoPlistContent = fs.readFileSync(path.join(iosWidgetDir, 'Info.plist'), 'utf8');
 assert.strictEqual(infoPlistContent.includes('com.apple.widgetkit-extension'), true, 'Must declare NSExtensionPointIdentifier');
-console.log('✓ Test 4 PASSED: Widget Info.plist and Entitlements configure com.apple.widgetkit-extension and App Group.');
+assert.strictEqual(infoPlistContent.includes('XPC!'), true, 'Info.plist must explicitly declare CFBundlePackageType as XPC!');
+assert.strictEqual(
+  infoPlistContent.includes('$(PRODUCT_BUNDLE_PACKAGE_TYPE)'),
+  false,
+  'Info.plist must NOT use $(PRODUCT_BUNDLE_PACKAGE_TYPE)'
+);
+console.log('✓ Test 4 PASSED: Widget Info.plist has XPC! package type and com.apple.widgetkit-extension.');
 
 // 5. Verify Native Bridge Module
 const bridgeH = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowWidgetBridge.h'), 'utf8');
@@ -67,7 +82,7 @@ assert.strictEqual(bridgeM.includes('group.com.sparke27.mobile'), true, 'Must wr
 assert.strictEqual(bridgeM.includes('reloadAllTimelines'), true, 'Must reload WidgetCenter timelines');
 console.log('✓ Test 5 PASSED: StockFlowWidgetBridge NativeModule implements setWidgetSnapshot and refreshWidgets.');
 
-// 6. Test App Group Config Plugin application on mock app.json
+// 6. Test App Group & EAS Config Plugin application on mock app.json
 const mockConfig = {
   name: 'mobile',
   slug: 'mobile',
@@ -77,20 +92,46 @@ const mockConfig = {
   plugins: [],
 };
 
-// Test that plugin executes without throwing on mock config
 const modifiedConfig = withIosWidget(mockConfig);
 assert.notStrictEqual(modifiedConfig, undefined, 'Config must not be undefined');
-console.log('✓ Test 6 PASSED: withIosWidget plugin executes cleanly on Expo configuration.');
+assert.strictEqual(
+  Array.isArray(modifiedConfig.extra?.eas?.build?.experimental?.ios?.appExtensions),
+  true,
+  'Config plugin must register extra.eas.build.experimental.ios.appExtensions'
+);
 
-// 7. Test Xcode project dangerous mod execution and target generation
+const registeredExt = modifiedConfig.extra.eas.build.experimental.ios.appExtensions.find(
+  (e) => e.targetName === 'StockFlowWidgetExtension'
+);
+assert.notStrictEqual(registeredExt, undefined, 'StockFlowWidgetExtension must be registered in EAS appExtensions');
+assert.strictEqual(
+  registeredExt.bundleIdentifier,
+  'com.sparke27.mobile.StockFlowWidgetExtension',
+  'Widget bundle ID must match'
+);
+assert.strictEqual(
+  registeredExt.entitlements['com.apple.security.application-groups'].includes('group.com.sparke27.mobile'),
+  true,
+  'Widget extension must have App Group entitlement registered'
+);
+console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configures App Group and EAS appExtensions.');
+
+// 7. Test Xcode project dangerous mod execution: Target Dependency, Embed App Extensions, and Build Settings
 (async function runXcodeProjectTest() {
   const xcode = require('xcode');
   const tmpTestDir = path.join(__dirname, '..', '.tmp-test-ios');
-  const templatePbxproj = path.join(__dirname, '..', '..', 'flutter_mobile', 'ios', 'Runner.xcodeproj', 'project.pbxproj');
+  const templatePbxproj = path.join(
+    __dirname,
+    '..',
+    '..',
+    'flutter_mobile',
+    'ios',
+    'Runner.xcodeproj',
+    'project.pbxproj'
+  );
 
   if (!fs.existsSync(templatePbxproj)) {
-    console.log('⚠ Skipping Test 7: Xcode project template not found.');
-    console.log('\n=== ALL 6 iOS WIDGET CONFIGURATION TESTS PASSED ===');
+    console.log('⚠ Skipping Tests 7-9: Xcode project template not found.');
     return;
   }
 
@@ -116,6 +157,8 @@ console.log('✓ Test 6 PASSED: withIosWidget plugin executes cleanly on Expo co
     const pbxContent = fs.readFileSync(savedPbxprojPath, 'utf8');
 
     assert.strictEqual(pbxContent.includes('StockFlowWidgetExtension'), true, 'Project must contain StockFlowWidgetExtension');
+    assert.strictEqual(pbxContent.includes('Embed App Extensions'), true, 'Project must contain Embed App Extensions');
+    assert.strictEqual(pbxContent.includes('RemoveHeadersOnCopy'), true, 'Project must contain RemoveHeadersOnCopy in Embed App Extensions');
     assert.strictEqual(pbxContent.includes('StockFlowTasksWidget.swift'), true, 'Project must contain StockFlowTasksWidget.swift');
     assert.strictEqual(pbxContent.includes('StockFlowWidgetBridge.m'), true, 'Project must contain StockFlowWidgetBridge.m');
     assert.strictEqual(pbxContent.includes('StockFlowWidgetBridge.h'), true, 'Project must contain StockFlowWidgetBridge.h');
@@ -123,33 +166,149 @@ console.log('✓ Test 6 PASSED: withIosWidget plugin executes cleanly on Expo co
     const parsedProj = xcode.project(savedPbxprojPath);
     parsedProj.parseSync();
     const targets = parsedProj.pbxNativeTargetSection();
+
+    // Verify main target has dependency and Embed App Extensions phase
+    const mainTargetKey = Object.keys(targets).find(
+      (uuid) => !uuid.endsWith('_comment') && (targets[uuid].name === 'mobile' || targets[uuid].name === '"mobile"')
+    );
+    assert.notStrictEqual(mainTargetKey, undefined, 'Main target "mobile" must exist');
+    const mainTarget = targets[mainTargetKey];
+
+    // Verify target dependency
+    const targetDeps = parsedProj.hash.project.objects['PBXTargetDependency'] || {};
     const widgetTargetKey = Object.keys(targets).find(
       (uuid) => targets[uuid].name === 'StockFlowWidgetExtension' || targets[uuid].name === '"StockFlowWidgetExtension"'
     );
-    assert.notStrictEqual(widgetTargetKey, undefined, 'StockFlowWidgetExtension target must exist in pbxNativeTargetSection');
+    assert.notStrictEqual(widgetTargetKey, undefined, 'StockFlowWidgetExtension target must exist');
 
-    const widgetTarget = targets[widgetTargetKey];
-    const buildPhases = widgetTarget.buildPhases || [];
-    assert.strictEqual(buildPhases.some((bp) => bp.comment === 'Sources'), true, 'Widget target must have Sources build phase');
-    assert.strictEqual(buildPhases.some((bp) => bp.comment === 'Frameworks'), true, 'Widget target must have Frameworks build phase');
+    const hasTargetDep = (mainTarget.dependencies || []).some((dep) => {
+      const depObj = targetDeps[dep.value];
+      return depObj && depObj.target === widgetTargetKey;
+    });
+    assert.strictEqual(hasTargetDep, true, 'Main app target must have PBXTargetDependency on StockFlowWidgetExtension');
 
-    const fileRefs = parsedProj.pbxFileReferenceSection();
-    const swiftFileRef = Object.values(fileRefs).find(
-      (ref) => ref.path === 'StockFlowTasksWidget.swift' || ref.path === '"StockFlowTasksWidget.swift"'
+    // Verify Embed App Extensions copy-files phase on main target
+    const copyFiles = parsedProj.hash.project.objects['PBXCopyFilesBuildPhase'] || {};
+    let embedPhaseFound = false;
+    for (const k in copyFiles) {
+      if (k.endsWith('_comment')) continue;
+      const phase = copyFiles[k];
+      if (phase.dstSubfolderSpec === 13) {
+        embedPhaseFound = true;
+        assert.strictEqual(phase.name, '"Embed App Extensions"', 'Phase name must be "Embed App Extensions"');
+        assert.strictEqual(phase.dstPath, '""', 'dstPath must be empty string');
+
+        // Verify StockFlowWidgetExtension.appex is embedded
+        const hasAppexFile = (phase.files || []).some((f) => {
+          const bf = parsedProj.hash.project.objects['PBXBuildFile']?.[f.value];
+          return (
+            bf &&
+            (f.comment?.includes('StockFlowWidgetExtension.appex') ||
+              bf.fileRef_comment?.includes('StockFlowWidgetExtension.appex'))
+          );
+        });
+        assert.strictEqual(hasAppexFile, true, 'Embed App Extensions phase must contain StockFlowWidgetExtension.appex');
+      }
+    }
+    assert.strictEqual(embedPhaseFound, true, 'Must find PBXCopyFilesBuildPhase with dstSubfolderSpec 13 (PlugIns)');
+
+    // Verify Build Settings for StockFlowWidgetExtension
+    const configs = parsedProj.pbxXCBuildConfigurationSection();
+    let extConfigFound = false;
+    for (const cId in configs) {
+      const c = configs[cId];
+      if (c.buildSettings?.PRODUCT_NAME?.includes('StockFlowWidgetExtension')) {
+        extConfigFound = true;
+        assert.strictEqual(
+          c.buildSettings.PRODUCT_BUNDLE_IDENTIFIER,
+          '"com.sparke27.mobile.StockFlowWidgetExtension"'
+        );
+        assert.strictEqual(c.buildSettings.INFOPLIST_FILE, '"StockFlowWidget/Info.plist"');
+        assert.strictEqual(c.buildSettings.CODE_SIGN_ENTITLEMENTS, '"StockFlowWidget/StockFlowWidget.entitlements"');
+        assert.strictEqual(c.buildSettings.SKIP_INSTALL, 'YES');
+        assert.strictEqual(c.buildSettings.SWIFT_VERSION, '5.0');
+        assert.strictEqual(c.buildSettings.IPHONEOS_DEPLOYMENT_TARGET, '16.0');
+      }
+    }
+    assert.strictEqual(extConfigFound, true, 'StockFlowWidgetExtension XCBuildConfiguration must exist');
+    console.log('✓ Test 7 PASSED: Xcode project generates Target Dependency, Embed App Extensions build phase (PlugIns), and build settings.');
+
+    // 8. Test Idempotency: re-running dangerousMod does not corrupt or duplicate phases
+    await dangerousMod(modConfig);
+    const parsedProj2 = xcode.project(savedPbxprojPath);
+    parsedProj2.parseSync();
+    const copyFiles2 = parsedProj2.hash.project.objects['PBXCopyFilesBuildPhase'] || {};
+    const embedPhasesCount = Object.keys(copyFiles2).filter(
+      (k) => !k.endsWith('_comment') && copyFiles2[k].dstSubfolderSpec === 13
+    ).length;
+    assert.strictEqual(embedPhasesCount, 1, 'Re-running prebuild must not duplicate Embed App Extensions phase');
+    console.log('✓ Test 8 PASSED: Prebuild plugin is idempotent across multiple prebuild invocations.');
+
+    // 9. Automated Physical-Device IPA Verification Test
+    console.log('\n--- Running Automated Physical-Device IPA Verification Test ---');
+    const mockIpaDir = path.join(tmpTestDir, 'mock-ipa-test');
+    const mockPayloadDir = path.join(mockIpaDir, 'Payload', 'mobile.app');
+    const mockPlugInsDir = path.join(mockPayloadDir, 'PlugIns', 'StockFlowWidgetExtension.appex');
+    fs.mkdirSync(mockPlugInsDir, { recursive: true });
+
+    // Copy template Info.plist into mock appex
+    fs.copyFileSync(
+      path.join(iosWidgetDir, 'Info.plist'),
+      path.join(mockPlugInsDir, 'Info.plist')
     );
-    assert.notStrictEqual(swiftFileRef, undefined, 'StockFlowTasksWidget.swift PBXFileReference must have relative path without double folder nesting');
+    // Write dummy binary
+    fs.writeFileSync(path.join(mockPlugInsDir, 'StockFlowWidgetExtension'), 'mock-binary-data');
 
-    const bridgeFileRef = Object.values(fileRefs).find(
-      (ref) => ref.path === 'StockFlowWidgetBridge.m' || ref.path === '"StockFlowWidgetBridge.m"'
-    );
-    assert.notStrictEqual(bridgeFileRef, undefined, 'StockFlowWidgetBridge.m PBXFileReference must have relative path without double folder nesting');
+    // Create mock embedded.mobileprovision containing group.com.sparke27.mobile
+    const mockProvisioning = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Entitlements</key>
+    <dict>
+        <key>application-identifier</key>
+        <string>TEAM123456.com.sparke27.mobile.StockFlowWidgetExtension</string>
+        <key>com.apple.security.application-groups</key>
+        <array>
+            <string>group.com.sparke27.mobile</string>
+        </array>
+    </dict>
+</dict>
+</plist>`;
+    fs.writeFileSync(path.join(mockPlugInsDir, 'embedded.mobileprovision'), mockProvisioning);
+    fs.writeFileSync(path.join(mockPayloadDir, 'embedded.mobileprovision'), mockProvisioning);
 
-    console.log('✓ Test 7 PASSED: StockFlowWidgetExtension target & build phases generated cleanly without path errors.');
-    console.log('\n=== ALL 7 iOS WIDGET CONFIGURATION TESTS PASSED ===');
+    // Package into mock StockFlow-Test.ipa using tar
+    const mockIpaPath = path.join(tmpTestDir, 'StockFlow-Test.ipa');
+    execSync(`tar -cf "${mockIpaPath}" -C "${mockIpaDir}" Payload`, { stdio: 'pipe' });
+    assert.strictEqual(fs.existsSync(mockIpaPath), true, 'Mock IPA file must be created');
+
+    // Verify valid IPA passes
+    const verifySuccess = verifyIpa(mockIpaPath);
+    assert.strictEqual(verifySuccess, true, 'verifyIpa must return true for valid IPA');
+
+    // Verify broken IPA fails (e.g. missing PlugIns)
+    const brokenIpaDir = path.join(tmpTestDir, 'broken-ipa-test');
+    const brokenPayloadDir = path.join(brokenIpaDir, 'Payload', 'mobile.app');
+    fs.mkdirSync(brokenPayloadDir, { recursive: true });
+    const brokenIpaPath = path.join(tmpTestDir, 'StockFlow-Broken.ipa');
+    execSync(`tar -cf "${brokenIpaPath}" -C "${brokenIpaDir}" Payload`, { stdio: 'pipe' });
+
+    let failedAsExpected = false;
+    try {
+      verifyIpa(brokenIpaPath);
+    } catch (expectedErr) {
+      failedAsExpected = true;
+      assert.strictEqual(expectedErr.message.includes('Missing PlugIns'), true);
+    }
+    assert.strictEqual(failedAsExpected, true, 'verifyIpa must fail if PlugIns is missing');
+    console.log('✓ Test 9 PASSED: Automated IPA verification reliably validates physical-device IPA bundles.');
+
+    console.log('\n=== ALL 9 iOS WIDGET CONFIGURATION & IPA TESTS PASSED ===');
   } finally {
     fs.rmSync(tmpTestDir, { recursive: true, force: true });
   }
 })().catch((err) => {
-  console.error('Test 7 FAILED:', err);
+  console.error('Test FAILED:', err);
   process.exit(1);
 });

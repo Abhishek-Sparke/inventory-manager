@@ -101,7 +101,24 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "1ad23d4b-18a4-4321-82d1-7dc0bbce0589"
+        "projectId": "1ad23d4b-18a4-4321-82d1-7dc0bbce0589",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "targetName": "StockFlowWidgetExtension",
+                  "bundleIdentifier": "com.sparke27.mobile.StockFlowWidgetExtension",
+                  "entitlements": {
+                    "com.apple.security.application-groups": [
+                      "group.com.sparke27.mobile"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
       }
     }
   }

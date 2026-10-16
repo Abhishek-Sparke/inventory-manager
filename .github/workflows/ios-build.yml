@@ -20,6 +20,7 @@ on:
         options:
           - preview
           - development
+
   push:
     branches:
       - main
@@ -146,10 +147,16 @@ jobs:
 
           echo "Standalone JavaScript bundle found."
 
-          if [ -d "$APP_PATH/PlugIns" ]; then
-            echo "=== App extensions ==="
-            ls -la "$APP_PATH/PlugIns"
+          echo "=== Verifying Embedded WidgetKit Extension ==="
+
+          if [ ! -d "$APP_PATH/PlugIns/StockFlowWidgetExtension.appex" ]; then
+            echo "::error::StockFlowWidgetExtension.appex was not embedded in mobile.app/PlugIns/"
+            exit 1
           fi
+
+          ls -la "$APP_PATH/PlugIns/StockFlowWidgetExtension.appex"
+
+          node scripts/verify-ipa.js "$APP_PATH"
 
           cd build/Build/Products/Release-iphonesimulator
           zip -r -y ../../../../StockFlow-iOS-Simulator.zip mobile.app
@@ -187,10 +194,28 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           PROFILE="${{ github.event.inputs.eas_profile || 'preview' }}"
+
           npx eas-cli build \
             --platform ios \
             --profile "$PROFILE" \
             --non-interactive
+
+      - name: Verify Physical Device IPA WidgetKit Extension
+        if: ${{ github.event.inputs.build_mode == 'device' && success() }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Verifying Built IPA Artifact for WidgetKit Extension ==="
+
+          FOUND_IPA=$(find . -maxdepth 3 -name "*.ipa" -print -quit)
+
+          if [ -z "$FOUND_IPA" ] || [ ! -f "$FOUND_IPA" ]; then
+            echo "::error::No IPA found in the workspace. EAS builds in the cloud; download the resulting IPA before local verification."
+            exit 1
+          fi
+
+          echo "Inspecting $FOUND_IPA..."
+          node scripts/verify-ipa.js "$FOUND_IPA"
 
       # ============================================================
       # LOG ARCHIVING ON FAILURE

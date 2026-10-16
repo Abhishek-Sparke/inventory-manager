@@ -7,14 +7,15 @@ struct WidgetTaskItem: Codable, Identifiable {
     let id: Int
     let title: String
     let timeFormatted: String
+    let dateFormatted: String?
     let priority: String?
     let isCompleted: Bool
 }
 
 struct WidgetDayData: Codable {
     let total: Int
-    let completed: Int
-    let percent: Int
+    let completed: Int?
+    let percent: Int?
     let tasks: [WidgetTaskItem]
 }
 
@@ -23,6 +24,8 @@ struct StockFlowWidgetSnapshot: Codable {
     let updatedAt: String?
     let overallPercent: Int?
     let today: WidgetDayData?
+    let tomorrow: WidgetDayData?
+    let upcoming7Days: WidgetDayData?
 }
 
 struct TaskEntry: TimelineEntry {
@@ -92,16 +95,36 @@ struct TaskTimelineProvider: TimelineProvider {
                 completed: 2,
                 percent: 67,
                 tasks: [
-                    WidgetTaskItem(id: 1, title: "Morning Inventory Count", timeFormatted: "09:00", priority: "high", isCompleted: true),
-                    WidgetTaskItem(id: 2, title: "Supplier Delivery Check", timeFormatted: "13:30", priority: "medium", isCompleted: true),
-                    WidgetTaskItem(id: 3, title: "Evening Restock Audit", timeFormatted: "17:45", priority: "high", isCompleted: false)
+                    WidgetTaskItem(id: 1, title: "Morning Inventory Count", timeFormatted: "09:00", dateFormatted: "Today", priority: "high", isCompleted: true),
+                    WidgetTaskItem(id: 2, title: "Supplier Delivery Check", timeFormatted: "13:30", dateFormatted: "Today", priority: "medium", isCompleted: true),
+                    WidgetTaskItem(id: 3, title: "Evening Restock Audit", timeFormatted: "17:45", dateFormatted: "Today", priority: "high", isCompleted: false)
+                ]
+            ),
+            tomorrow: WidgetDayData(
+                total: 2,
+                completed: 0,
+                percent: 0,
+                tasks: [
+                    WidgetTaskItem(id: 4, title: "Receiving Pallet Stock", timeFormatted: "10:00", dateFormatted: "Tomorrow", priority: "medium", isCompleted: false),
+                    WidgetTaskItem(id: 5, title: "Vendor SLA Review", timeFormatted: "15:00", dateFormatted: "Tomorrow", priority: "high", isCompleted: false)
+                ]
+            ),
+            upcoming7Days: WidgetDayData(
+                total: 4,
+                completed: 0,
+                percent: 0,
+                tasks: [
+                    WidgetTaskItem(id: 4, title: "Receiving Pallet Stock", timeFormatted: "10:00", dateFormatted: "Tomorrow", priority: "medium", isCompleted: false),
+                    WidgetTaskItem(id: 5, title: "Vendor SLA Review", timeFormatted: "15:00", dateFormatted: "Tomorrow", priority: "high", isCompleted: false),
+                    WidgetTaskItem(id: 6, title: "Warehouse Safety Drill", timeFormatted: "11:30", dateFormatted: "Friday", priority: "low", isCompleted: false),
+                    WidgetTaskItem(id: 7, title: "Quarterly Stock Valuation", timeFormatted: "09:00", dateFormatted: "Next Mon", priority: "high", isCompleted: false)
                 ]
             )
         )
     }
 }
 
-// MARK: - SwiftUI Views
+// MARK: - SwiftUI Views for Today's Tasks Widget
 
 struct StockFlowTasksWidgetEntryView: View {
     @Environment(\.widgetFamily) var family
@@ -312,9 +335,193 @@ struct MediumWidgetView: View {
     }
 }
 
-// MARK: - Widget Declaration
+// MARK: - SwiftUI Views for Upcoming Tasks Widget
 
-@main
+struct StockFlowUpcomingWidgetEntryView: View {
+    @Environment(\.widgetFamily) var family
+    var entry: TaskTimelineProvider.Entry
+
+    var body: some View {
+        Group {
+            switch family {
+            case .systemSmall:
+                UpcomingSmallWidgetView(entry: entry)
+            default:
+                UpcomingMediumWidgetView(entry: entry)
+            }
+        }
+        .widgetURL(URL(string: "mobile://tasks?view=upcoming"))
+    }
+}
+
+struct UpcomingSmallWidgetView: View {
+    var entry: TaskTimelineProvider.Entry
+
+    var body: some View {
+        let upcoming = entry.snapshot?.upcoming7Days ?? entry.snapshot?.tomorrow
+        let tasks = upcoming?.tasks ?? []
+        let total = upcoming?.total ?? tasks.count
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HStack(spacing: 4) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(red: 0.22, green: 0.74, blue: 0.97))
+                    Text("Upcoming")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Color(red: 0.22, green: 0.74, blue: 0.97))
+                }
+                Spacer()
+                if total > 0 {
+                    Text("\(total)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if total == 0 {
+                Spacer()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Clear Horizon")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text("No upcoming tasks")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(tasks.prefix(2)) { task in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(task.title)
+                                .font(.system(size: 10, weight: .medium))
+                                .lineLimit(1)
+                                .foregroundColor(.primary)
+                            HStack(spacing: 4) {
+                                if let dateLabel = task.dateFormatted, !dateLabel.isEmpty {
+                                    Text(dateLabel)
+                                        .font(.system(size: 8, weight: .semibold))
+                                        .foregroundColor(Color(red: 0.22, green: 0.74, blue: 0.97))
+                                }
+                                if !task.timeFormatted.isEmpty && task.timeFormatted != "--:--" {
+                                    Text(task.timeFormatted)
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    if total > 2 {
+                        Text("+ \(total - 2) more")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(12)
+        .background(Color(red: 0.06, green: 0.09, blue: 0.16))
+    }
+}
+
+struct UpcomingMediumWidgetView: View {
+    var entry: TaskTimelineProvider.Entry
+
+    var body: some View {
+        let upcoming = entry.snapshot?.upcoming7Days ?? entry.snapshot?.tomorrow
+        let tasks = upcoming?.tasks ?? []
+        let total = upcoming?.total ?? tasks.count
+        let remainingCount = max(0, total - 3)
+
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                HStack(spacing: 4) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Color(red: 0.22, green: 0.74, blue: 0.97))
+                    Text("StockFlow Upcoming")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(Color(red: 0.22, green: 0.74, blue: 0.97))
+                }
+                Spacer()
+                if total > 0 {
+                    Text("\(total) Scheduled")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(white: 0.9))
+                } else {
+                    Text("Next 7 Days")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if total == 0 {
+                Spacer()
+                HStack {
+                    Spacer()
+                    VStack(spacing: 3) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 18))
+                            .foregroundColor(.secondary)
+                        Text("No upcoming tasks scheduled")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Color(white: 0.8))
+                        Text("Tasks scheduled for future days will appear here")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                Spacer()
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(tasks.prefix(3)) { task in
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(task.priority == "high" ? Color.red : (task.priority == "low" ? Color.gray : Color(red: 0.22, green: 0.74, blue: 0.97)))
+                                .frame(width: 6, height: 6)
+
+                            Text(task.title)
+                                .font(.system(size: 11, weight: .medium))
+                                .lineLimit(1)
+                                .foregroundColor(Color(white: 0.95))
+
+                            Spacer()
+
+                            if let dateLabel = task.dateFormatted, !dateLabel.isEmpty {
+                                Text(dateLabel)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(Color(red: 0.22, green: 0.74, blue: 0.97))
+                            }
+
+                            if !task.timeFormatted.isEmpty && task.timeFormatted != "--:--" {
+                                Text(task.timeFormatted)
+                                    .font(.system(size: 10, weight: .regular))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+
+                    if remainingCount > 0 {
+                        Text("+ \(remainingCount) more upcoming task\(remainingCount == 1 ? "" : "s")")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .padding(.top, 1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(12)
+        .background(Color(red: 0.06, green: 0.09, blue: 0.16))
+    }
+}
+
+// MARK: - Widget Declarations
+
 struct StockFlowTasksWidget: Widget {
     let kind: String = "StockFlowTasksWidget"
 
@@ -325,5 +532,29 @@ struct StockFlowTasksWidget: Widget {
         .configurationDisplayName("StockFlow Tasks")
         .description("View today's scheduled tasks and completion progress.")
         .supportedFamilies([.systemSmall, .systemMedium])
+    }
+}
+
+struct StockFlowUpcomingWidget: Widget {
+    let kind: String = "StockFlowUpcomingWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: TaskTimelineProvider()) { entry in
+            StockFlowUpcomingWidgetEntryView(entry: entry)
+        }
+        .configurationDisplayName("StockFlow Upcoming Tasks")
+        .description("Upcoming 7-day scheduled tasks.")
+        .supportedFamilies([.systemSmall, .systemMedium])
+    }
+}
+
+// MARK: - Widget Bundle
+
+@main
+struct StockFlowWidgetBundle: WidgetBundle {
+    @WidgetBundleBuilder
+    var body: some Widget {
+        StockFlowTasksWidget()
+        StockFlowUpcomingWidget()
     }
 }

@@ -132,6 +132,8 @@ jobs:
           test -s StockFlow.ipa
           tar -tf StockFlow.ipa | grep -E 'PlugIns/StockFlowWidgetExtension.appex/' | head -n 10
           ls -lh StockFlow.ipa
+          echo "Running automated verification on packaged IPA..."
+          node scripts/verify-ipa.js StockFlow.ipa
       - name: Upload IPA artifact
         if: success()
         uses: actions/upload-artifact@v4
