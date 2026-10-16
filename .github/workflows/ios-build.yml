@@ -96,11 +96,9 @@ jobs:
       # ============================================================
 
       - name: Generate iOS native project
-        if: ${{ github.event.inputs.build_mode != 'device' }}
         run: npx expo prebuild --platform ios --no-install
 
       - name: Install CocoaPods dependencies
-        if: ${{ github.event.inputs.build_mode != 'device' }}
         run: |
           cd ios
           pod install --repo-update
@@ -173,49 +171,70 @@ jobs:
           retention-days: 14
 
       # ============================================================
-      # MODE B: PHYSICAL DEVICE IPA BUILD
+      # MODE B: UNSIGNED PHYSICAL-DEVICE IPA BUILD
+      # This produces an unsigned IPA artifact. It is not directly
+      # installable on a physical iPhone until properly signed.
       # ============================================================
 
-      - name: Check physical device signing credentials
+      - name: Build standalone Release app for physical iOS device (unsigned)
         if: ${{ github.event.inputs.build_mode == 'device' }}
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "::error::Missing EXPO_TOKEN. Device builds require EAS and valid Apple signing credentials."
-            exit 1
-          fi
+          set -o pipefail
 
-          echo "EAS token detected."
+          xcodebuild \
+            -workspace ios/mobile.xcworkspace \
+            -scheme mobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build-device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build 2>&1 | tee xcodebuild-device.log
 
-      - name: Execute EAS Cloud Build for Physical Device IPA
+      - name: Package and verify unsigned physical-device IPA
         if: ${{ github.event.inputs.build_mode == 'device' }}
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          PROFILE="${{ github.event.inputs.eas_profile || 'preview' }}"
-
-          npx eas-cli build \
-            --platform ios \
-            --profile "$PROFILE" \
-            --non-interactive
-
-      - name: Verify Physical Device IPA WidgetKit Extension
-        if: ${{ github.event.inputs.build_mode == 'device' && success() }}
         run: |
           set -euo pipefail
 
-          echo "=== Verifying Built IPA Artifact for WidgetKit Extension ==="
+          APP_PATH="build-device/Build/Products/Release-iphoneos/mobile.app"
+          IPA_PATH="StockFlow-unsigned.ipa"
 
-          FOUND_IPA=$(find . -maxdepth 3 -name "*.ipa" -print -quit)
-
-          if [ -z "$FOUND_IPA" ] || [ ! -f "$FOUND_IPA" ]; then
-            echo "::error::No IPA found in the workspace. EAS builds in the cloud; download the resulting IPA before local verification."
+          if [ ! -d "$APP_PATH" ]; then
+            echo "::error::Device app not found at $APP_PATH"
+            find build-device -name "*.app" -print || true
             exit 1
           fi
 
-          echo "Inspecting $FOUND_IPA..."
-          node scripts/verify-ipa.js "$FOUND_IPA"
+          if [ ! -f "$APP_PATH/main.jsbundle" ]; then
+            echo "::error::main.jsbundle is missing from the device app."
+            find "$APP_PATH" -maxdepth 2 -iname "*bundle*" -print || true
+            exit 1
+          fi
+
+          EXT_PATH="$APP_PATH/PlugIns/StockFlowWidgetExtension.appex"
+          if [ ! -d "$EXT_PATH" ]; then
+            echo "::error::StockFlowWidgetExtension.appex was not embedded in the device app."
+            find "$APP_PATH" -maxdepth 4 -name "*.appex" -print || true
+            exit 1
+          fi
+
+          mkdir -p ipa-staging/Payload
+          cp -R "$APP_PATH" ipa-staging/Payload/mobile.app
+          (cd ipa-staging && /usr/bin/zip -qry "../$IPA_PATH" Payload)
+
+          echo "=== Unsigned IPA created ==="
+          ls -lh "$IPA_PATH"
+          node scripts/verify-ipa.js "$IPA_PATH"
+
+      - name: Upload unsigned physical-device IPA
+        if: ${{ github.event.inputs.build_mode == 'device' && success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockFlow-iOS-Unsigned-IPA
+          path: apps/mobile/StockFlow-unsigned.ipa
+          retention-days: 14
 
       # ============================================================
       # LOG ARCHIVING ON FAILURE
@@ -228,5 +247,7 @@ jobs:
           name: ios-build-failure-logs
           path: |
             apps/mobile/xcodebuild-simulator.log
+            apps/mobile/xcodebuild-device.log
             apps/mobile/build/Logs/
+            apps/mobile/build-device/Logs/
           retention-days: 7
