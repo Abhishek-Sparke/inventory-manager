@@ -1,31 +1,32 @@
+
 name: StockFlow iOS Build (Simulator & Device)
 
 on:
   workflow_dispatch:
     inputs:
       build_mode:
-        description: 'Select build mode'
+        description: "Select build mode"
         required: true
-        default: 'simulator'
+        default: simulator
         type: choice
         options:
-          - 'simulator'
-          - 'device'
+          - simulator
+          - device
       eas_profile:
-        description: 'EAS Profile (only used for device mode with EXPO_TOKEN)'
+        description: "EAS Profile (device mode only)"
         required: false
-        default: 'preview'
+        default: preview
         type: choice
         options:
-          - 'preview'
-          - 'development'
+          - preview
+          - development
   push:
     branches:
       - main
-      - feature/**
+      - "feature/**"
     paths:
-      - 'apps/mobile/**'
-      - '.github/workflows/ios-build.yml'
+      - "apps/mobile/**"
+      - ".github/workflows/ios-build.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,23 +51,25 @@ jobs:
         run: |
           echo "=== Available Xcode versions ==="
           ls -d /Applications/Xcode* || true
+
           if [ -d "/Applications/Xcode_26.6.app" ]; then
             sudo xcode-select -s /Applications/Xcode_26.6.app
           elif [ -d "/Applications/Xcode_26.5.app" ]; then
             sudo xcode-select -s /Applications/Xcode_26.5.app
           elif [ -d "/Applications/Xcode_26.app" ]; then
             sudo xcode-select -s /Applications/Xcode_26.app
-          elif ls -d /Applications/Xcode_26* 1> /dev/null 2>&1; then
+          elif ls -d /Applications/Xcode_26* >/dev/null 2>&1; then
             LATEST_XCODE_26=$(ls -d /Applications/Xcode_26* | sort -V | tail -n 1)
             sudo xcode-select -s "$LATEST_XCODE_26"
           fi
+
           xcodebuild -version
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: apps/mobile/package-lock.json
 
       - name: Install dependencies
@@ -87,14 +90,13 @@ jobs:
       - name: Validate Expo configuration
         run: npx expo config --type public
 
-      # =========================================================================
-      # MODE A: iOS SIMULATOR BUILD (No Apple Developer Signing Required)
-      # =========================================================================
-      - name: Generate iOS native project (Prebuild)
+      # ============================================================
+      # MODE A: STANDALONE iOS SIMULATOR BUILD
+      # ============================================================
+
+      - name: Generate iOS native project
         if: ${{ github.event.inputs.build_mode != 'device' }}
-        run: |
-          echo "Running expo prebuild for iOS..."
-          npx expo prebuild --platform ios --no-install
+        run: npx expo prebuild --platform ios --no-install
 
       - name: Install CocoaPods dependencies
         if: ${{ github.event.inputs.build_mode != 'device' }}
@@ -102,15 +104,15 @@ jobs:
           cd ios
           pod install --repo-update
 
-      - name: Build main application & WidgetKit extension for iOS Simulator
+      - name: Build standalone Release app for iOS Simulator
         if: ${{ github.event.inputs.build_mode != 'device' }}
         run: |
           set -o pipefail
-          echo "=== Building iOS Simulator Target (main app + WidgetKit extension) ==="
+
           xcodebuild \
             -workspace ios/mobile.xcworkspace \
             -scheme mobile \
-            -configuration Debug \
+            -configuration Release \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
@@ -119,26 +121,39 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="" \
             build 2>&1 | tee xcodebuild-simulator.log
 
-      - name: Package Simulator App Bundle into ZIP
+      - name: Verify and package simulator app
         if: ${{ github.event.inputs.build_mode != 'device' }}
         run: |
-          APP_PATH="build/Build/Products/Debug-iphonesimulator/mobile.app"
+          set -euo pipefail
+
+          APP_PATH="build/Build/Products/Release-iphonesimulator/mobile.app"
+
           if [ ! -d "$APP_PATH" ]; then
-            echo "Error: mobile.app not found at $APP_PATH"
-            find build -name "*.app" || true
+            echo "::error::Simulator app not found at $APP_PATH"
+            find build -name "*.app" -print || true
             exit 1
           fi
 
-          echo "Inspecting compiled application bundle..."
+          echo "=== Checking app bundle ==="
           ls -la "$APP_PATH"
+
+          if [ ! -f "$APP_PATH/main.jsbundle" ]; then
+            echo "::error::main.jsbundle is missing. The JavaScript bundle may not have been embedded."
+            echo "Inspecting likely bundle files:"
+            find "$APP_PATH" -maxdepth 2 -iname "*bundle*" -print || true
+            exit 1
+          fi
+
+          echo "Standalone JavaScript bundle found."
+
           if [ -d "$APP_PATH/PlugIns" ]; then
-            echo "=== Embedded App Extensions (WidgetKit) ==="
+            echo "=== App extensions ==="
             ls -la "$APP_PATH/PlugIns"
           fi
 
-          echo "Compressing simulator app bundle into StockFlow-iOS-Simulator.zip..."
-          cd build/Build/Products/Debug-iphonesimulator
+          cd build/Build/Products/Release-iphonesimulator
           zip -r -y ../../../../StockFlow-iOS-Simulator.zip mobile.app
+
           cd ../../../..
           ls -lh StockFlow-iOS-Simulator.zip
 
@@ -150,30 +165,21 @@ jobs:
           path: apps/mobile/StockFlow-iOS-Simulator.zip
           retention-days: 14
 
-      # =========================================================================
-      # MODE B: PHYSICAL DEVICE IPA BUILD (Credentials Required)
-      # =========================================================================
+      # ============================================================
+      # MODE B: PHYSICAL DEVICE IPA BUILD
+      # ============================================================
+
       - name: Check physical device signing credentials
         if: ${{ github.event.inputs.build_mode == 'device' }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
-          echo "=== Checking Physical Device Signing Credentials ==="
           if [ -z "$EXPO_TOKEN" ]; then
-            echo "::error title=Missing Apple / EAS Credentials::Physical-device IPA builds require active Apple Developer code signing credentials."
-            echo ""
-            echo "EXPLANATION:"
-            echo "1. Apple's iOS security architecture strictly prevents physical iPhones from installing unsigned IPAs."
-            echo "2. App Extensions (WidgetKit) and App Groups (group.com.sparke27.mobile) require an Apple Distribution Certificate and an Ad-Hoc Provisioning Profile created by an Apple Developer Team."
-            echo "3. Free Apple IDs cannot produce Ad-Hoc or Enterprise provisioning profiles for over-the-air installation."
-            echo ""
-            echo "TO RESOLVE:"
-            echo "- Add repository secret 'EXPO_TOKEN' from https://expo.dev/settings/access-tokens (linked to an authorized Apple Developer team)."
-            echo "- Or run Mode A ('simulator') for testing on macOS iOS Simulator without signing credentials."
+            echo "::error::Missing EXPO_TOKEN. Device builds require EAS and valid Apple signing credentials."
             exit 1
-          else
-            echo "EXPO_TOKEN detected. Proceeding with EAS Cloud Build..."
           fi
+
+          echo "EAS token detected."
 
       - name: Execute EAS Cloud Build for Physical Device IPA
         if: ${{ github.event.inputs.build_mode == 'device' }}
@@ -181,12 +187,15 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           PROFILE="${{ github.event.inputs.eas_profile || 'preview' }}"
-          echo "Triggering EAS build for iOS with profile: $PROFILE"
-          npx eas-cli build --platform ios --profile "$PROFILE" --non-interactive
+          npx eas-cli build \
+            --platform ios \
+            --profile "$PROFILE" \
+            --non-interactive
 
-      # =========================================================================
+      # ============================================================
       # LOG ARCHIVING ON FAILURE
-      # =========================================================================
+      # ============================================================
+
       - name: Archive compilation logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
