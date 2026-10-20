@@ -50,7 +50,14 @@ struct TaskTimelineProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<TaskEntry>) -> Void) {
         let entry = loadSnapshot()
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 30, to: Date()) ?? Date().addingTimeInterval(1800)
+        let now = Date()
+        let calendar = Calendar.current
+
+        // Schedule next update: 30 minutes, or at next midnight (whichever is earlier)
+        let in30Minutes = calendar.date(byAdding: .minute, value: 30, to: now) ?? now.addingTimeInterval(1800)
+        let tomorrowMidnight = calendar.startOfDay(for: calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86400)).addingTimeInterval(1)
+        let nextUpdate = min(in30Minutes, tomorrowMidnight)
+
         let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
         completion(timeline)
     }
@@ -77,12 +84,49 @@ struct TaskTimelineProvider: TimelineProvider {
         }
 
         var isStale = false
+        var effectiveSnapshot = snapshot
+
         if let updatedStr = snapshot.updatedAt,
            let updatedDate = ISO8601DateFormatter().date(from: updatedStr) {
-            isStale = !Calendar.current.isDateInToday(updatedDate)
+            let isToday = Calendar.current.isDateInToday(updatedDate)
+            if !isToday {
+                isStale = true
+                // Automatic rollover: if snapshot was saved yesterday and has tomorrow's tasks,
+                // seamlessly promote them to today's tasks
+                let calendar = Calendar.current
+                let yesterday = calendar.date(byAdding: .day, value: -1, to: Date()) ?? Date().addingTimeInterval(-86400)
+                if calendar.isDate(updatedDate, inSameDayAs: yesterday),
+                   let tomorrowData = snapshot.tomorrow,
+                   tomorrowData.total > 0 {
+                    let rolledToday = WidgetDayData(
+                        total: tomorrowData.total,
+                        completed: 0,
+                        percent: 0,
+                        tasks: tomorrowData.tasks.map { task in
+                            WidgetTaskItem(
+                                id: task.id,
+                                title: task.title,
+                                timeFormatted: task.timeFormatted,
+                                dateFormatted: "Today",
+                                priority: task.priority,
+                                isCompleted: false
+                            )
+                        }
+                    )
+                    effectiveSnapshot = StockFlowWidgetSnapshot(
+                        installationId: snapshot.installationId,
+                        updatedAt: snapshot.updatedAt,
+                        overallPercent: 0,
+                        today: rolledToday,
+                        tomorrow: nil,
+                        upcoming7Days: snapshot.upcoming7Days
+                    )
+                    isStale = false
+                }
+            }
         }
 
-        return TaskEntry(date: Date(), snapshot: snapshot, isStale: isStale)
+        return TaskEntry(date: Date(), snapshot: effectiveSnapshot, isStale: isStale)
     }
 
     private func sampleSnapshot() -> StockFlowWidgetSnapshot {

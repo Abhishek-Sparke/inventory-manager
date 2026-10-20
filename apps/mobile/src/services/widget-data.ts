@@ -215,8 +215,8 @@ export async function saveWidgetSnapshotAsync(
     }
     await Promise.all(writes);
 
-    // Persist to native Android SharedPreferences via native bridge
-    if (Platform.OS === 'android') {
+    // Persist to native Android SharedPreferences and iOS UserDefaults via native bridge
+    if (Platform.OS === 'android' || Platform.OS === 'ios') {
       try {
         const { StockFlowWidgetBridge } = NativeModules;
         if (StockFlowWidgetBridge?.setWidgetSnapshot) {
@@ -354,8 +354,40 @@ export async function syncWidgetDataAsync(
 }
 
 /**
- * Refreshes the native Android and iOS home-screen widgets from the existing local cached snapshot.
- * Safe to call on app startup and on AppState transitions without hitting the network or recalculating tasks.
+ * Reads all tasks directly from the local offline SQLite database (`stockflow.db`),
+ * computes fresh widget metrics for the current date, persists the snapshot,
+ * and triggers immediate native widget redraw across Android and iOS.
+ */
+export async function syncWidgetDataFromDbAsync(
+  baseDate: Date = new Date(),
+  installationId?: string
+): Promise<StockFlowWidgetData> {
+  if (Platform.OS === 'web') {
+    return prepareWidgetData([], baseDate);
+  }
+
+  try {
+    const { getLocalTasksAsync } = require('./database');
+    const tasks = await getLocalTasksAsync();
+    return await syncWidgetDataAsync(tasks, baseDate, installationId);
+  } catch (err) {
+    console.warn('[WidgetData] syncWidgetDataFromDbAsync failed, falling back to cached snapshot:', err);
+    const cached = await loadWidgetSnapshotAsync(installationId);
+    if (cached) {
+      const { StockFlowWidgetBridge } = NativeModules;
+      if (StockFlowWidgetBridge?.refreshWidgets) {
+        await StockFlowWidgetBridge.refreshWidgets().catch(() => {});
+      }
+      return cached;
+    }
+    return prepareWidgetData([], baseDate);
+  }
+}
+
+/**
+ * Refreshes the native Android and iOS home-screen widgets automatically.
+ * Automatically loads fresh data from local SQLite for current date, falling back to cached snapshot.
+ * Safe to call on app startup and on AppState transitions without hitting the network.
  */
 export async function refreshWidgetFromSnapshotAsync(
   installationId?: string
@@ -365,6 +397,14 @@ export async function refreshWidgetFromSnapshotAsync(
   }
 
   try {
+    // Attempt fresh calculation from SQLite first so new day/midnight rollover is accurate
+    try {
+      await syncWidgetDataFromDbAsync(new Date(), installationId);
+      return true;
+    } catch {
+      // Fallback to pure native bridge refresh
+    }
+
     const { StockFlowWidgetBridge } = NativeModules;
     if (StockFlowWidgetBridge?.refreshWidgets) {
       await StockFlowWidgetBridge.refreshWidgets();
@@ -376,4 +416,5 @@ export async function refreshWidgetFromSnapshotAsync(
     return false;
   }
 }
+
 

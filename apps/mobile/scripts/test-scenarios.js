@@ -2601,7 +2601,7 @@ console.log('--- Starting StockFlow Upgrades Scenario Tests ---');
   // =========================================================================
   const sampleInventoryItems = [
     { id: 101, name: 'Thermal Receipt Rolls', sku: 'THRM-01', quantity: 3, min_stock_threshold: 10, expiry_date: null },
-    { id: 102, name: 'Industrial Cleaner', sku: 'CLN-02', quantity: 20, min_stock_threshold: 5, expiry_date: '2026-10-18T00:00:00Z' },
+    { id: 102, name: 'Industrial Cleaner', sku: 'CLN-02', quantity: 20, min_stock_threshold: 5, expiry_date: new Date(Date.now() + 3 * 86400 * 1000).toISOString() },
     { id: 103, name: 'Corrugated Shipping Boxes', sku: 'BOX-03', quantity: 0, min_stock_threshold: 50, expiry_date: null },
   ];
 

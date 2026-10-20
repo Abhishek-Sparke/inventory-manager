@@ -21,13 +21,22 @@ export async function widgetTaskHandler(props: WidgetTaskHandlerProps) {
     case 'WIDGET_UPDATE':
     case 'WIDGET_RESIZED': {
       try {
-        const snapshot = await loadWidgetSnapshotAsync();
+        let snapshot = await loadWidgetSnapshotAsync();
         let isStale = false;
 
         if (snapshot && snapshot.updatedAt) {
           const snapshotDate = getLocalDateString(new Date(snapshot.updatedAt));
           const todayDate = getLocalDateString(new Date());
           isStale = snapshotDate !== todayDate;
+        }
+
+        // If snapshot is missing or stale across midnight, calculate fresh data from local SQLite
+        if (!snapshot || isStale) {
+          try {
+            const { syncWidgetDataFromDbAsync } = require('@/services/widget-data');
+            snapshot = await syncWidgetDataFromDbAsync();
+            isStale = false;
+          } catch {}
         }
 
         if (widgetInfo?.widgetName === UPCOMING_WIDGET_NAME) {
