@@ -113,7 +113,7 @@ console.log('✓ Test 5 PASSED: StockFlowWidgetBridge NativeModule implements sn
 
 // 6. Test App Group & EAS Config Plugin application on mock app.json
 const mockConfig = {
-  name: 'mobile',
+  name: 'StockFlow',
   slug: 'mobile',
   ios: {
     bundleIdentifier: 'com.sparke27.mobile',
@@ -165,10 +165,10 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
   }
 
   try {
-    fs.mkdirSync(path.join(tmpTestDir, 'mobile.xcodeproj'), { recursive: true });
-    fs.mkdirSync(path.join(tmpTestDir, 'mobile'), { recursive: true });
-    const templateContent = fs.readFileSync(templatePbxproj, 'utf8').replace(/Runner/g, 'mobile');
-    fs.writeFileSync(path.join(tmpTestDir, 'mobile.xcodeproj', 'project.pbxproj'), templateContent);
+    fs.mkdirSync(path.join(tmpTestDir, 'StockFlow.xcodeproj'), { recursive: true });
+    fs.mkdirSync(path.join(tmpTestDir, 'StockFlow'), { recursive: true });
+    const templateContent = fs.readFileSync(templatePbxproj, 'utf8').replace(/Runner/g, 'StockFlow');
+    fs.writeFileSync(path.join(tmpTestDir, 'StockFlow.xcodeproj', 'project.pbxproj'), templateContent);
 
     const dangerousMod = modifiedConfig.mods?.ios?.dangerous;
     assert.strictEqual(typeof dangerousMod, 'function', 'dangerousMod must be registered');
@@ -182,7 +182,7 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
 
     await dangerousMod(modConfig);
 
-    const savedPbxprojPath = path.join(tmpTestDir, 'mobile.xcodeproj', 'project.pbxproj');
+    const savedPbxprojPath = path.join(tmpTestDir, 'StockFlow.xcodeproj', 'project.pbxproj');
     const pbxContent = fs.readFileSync(savedPbxprojPath, 'utf8');
 
     assert.strictEqual(pbxContent.includes('StockFlowWidgetExtension'), true, 'Project must contain StockFlowWidgetExtension');
@@ -198,9 +198,14 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
 
     // Verify main target has dependency and Embed App Extensions phase
     const mainTargetKey = Object.keys(targets).find(
-      (uuid) => !uuid.endsWith('_comment') && (targets[uuid].name === 'mobile' || targets[uuid].name === '"mobile"')
+      (uuid) =>
+        !uuid.endsWith('_comment') &&
+        (targets[uuid].name === 'StockFlow' ||
+          targets[uuid].name === '"StockFlow"' ||
+          targets[uuid].name === 'mobile' ||
+          targets[uuid].name === '"mobile"')
     );
-    assert.notStrictEqual(mainTargetKey, undefined, 'Main target "mobile" must exist');
+    assert.notStrictEqual(mainTargetKey, undefined, 'Main target "StockFlow" must exist');
     const mainTarget = targets[mainTargetKey];
 
     // Verify target dependency
@@ -295,7 +300,7 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
     // 9. Automated Physical-Device IPA Verification Test
     console.log('\n--- Running Automated Physical-Device IPA Verification Test ---');
     const mockIpaDir = path.join(tmpTestDir, 'mock-ipa-test');
-    const mockPayloadDir = path.join(mockIpaDir, 'Payload', 'mobile.app');
+    const mockPayloadDir = path.join(mockIpaDir, 'Payload', 'StockFlow.app');
     const mockPlugInsDir = path.join(mockPayloadDir, 'PlugIns', 'StockFlowWidgetExtension.appex');
     fs.mkdirSync(mockPlugInsDir, { recursive: true });
 
@@ -337,7 +342,7 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
 
     // Verify broken IPA (missing PlugIns) fails with the right error
     const brokenIpaDir = path.join(tmpTestDir, 'broken-ipa-test');
-    const brokenPayloadDir = path.join(brokenIpaDir, 'Payload', 'mobile.app');
+    const brokenPayloadDir = path.join(brokenIpaDir, 'Payload', 'StockFlow.app');
     fs.mkdirSync(brokenPayloadDir, { recursive: true });
     const brokenIpaPath = path.join(tmpTestDir, 'StockFlow-Broken.ipa');
     execSync(`tar -cf "${brokenIpaPath}" -C "${brokenIpaDir}" Payload`, { stdio: 'pipe' });
@@ -354,7 +359,7 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
     // Verify nested .appex corruption is detected
     const nestedIpaDir = path.join(tmpTestDir, 'nested-appex-test');
     const nestedAppexDir = path.join(
-      nestedIpaDir, 'Payload', 'mobile.app', 'PlugIns',
+      nestedIpaDir, 'Payload', 'StockFlow.app', 'PlugIns',
       'StockFlowWidgetExtension.appex', 'StockFlowWidgetExtension.appex'
     );
     fs.mkdirSync(nestedAppexDir, { recursive: true });
@@ -483,7 +488,27 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
 
     console.log('✓ Test 13 PASSED: Empty state safety, read-only failure handling, and Android platform isolation strictly verified.');
 
-    console.log('\n=== ALL 13 iOS WIDGET CONFIGURATION & IPA TESTS PASSED ===');
+    // 14. Test build-unsigned-ipa.yml workflow naming alignment
+    const workflowPath = path.join(__dirname, '..', '..', '..', '.github', 'workflows', 'build-unsigned-ipa.yml');
+    assert.strictEqual(fs.existsSync(workflowPath), true, 'build-unsigned-ipa.yml must exist');
+    const workflowSrc = fs.readFileSync(workflowPath, 'utf8');
+
+    // Ensure no stale references remain
+    assert.strictEqual(workflowSrc.includes('mobile.xcodeproj'), false, 'Workflow must not reference mobile.xcodeproj');
+    assert.strictEqual(workflowSrc.includes('mobile.xcworkspace'), false, 'Workflow must not reference mobile.xcworkspace');
+    assert.strictEqual(workflowSrc.includes('-scheme mobile'), false, 'Workflow must not reference -scheme mobile');
+    assert.strictEqual(workflowSrc.includes('mobile.app'), false, 'Workflow must not reference mobile.app');
+
+    // Ensure correct StockFlow references exist
+    assert.strictEqual(workflowSrc.includes('StockFlow.xcodeproj'), true, 'Workflow must reference StockFlow.xcodeproj');
+    assert.strictEqual(workflowSrc.includes('StockFlow.xcworkspace'), true, 'Workflow must reference StockFlow.xcworkspace');
+    assert.strictEqual(workflowSrc.includes('-scheme StockFlow'), true, 'Workflow must reference -scheme StockFlow');
+    assert.strictEqual(workflowSrc.includes('StockFlow.app'), true, 'Workflow must package StockFlow.app');
+    assert.strictEqual(workflowSrc.includes('Payload/StockFlow.app/PlugIns'), true, 'Workflow must embed extension in Payload/StockFlow.app/PlugIns');
+
+    console.log('✓ Test 14 PASSED: build-unsigned-ipa.yml workflow consistently uses StockFlow project, workspace, scheme, and app bundle.');
+
+    console.log('\n=== ALL 14 iOS WIDGET CONFIGURATION & IPA TESTS PASSED ===');
   } finally {
     fs.rmSync(tmpTestDir, { recursive: true, force: true });
   }

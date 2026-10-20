@@ -52,14 +52,31 @@ jobs:
         run: |
           echo "=== iOS project files ==="
           find ios -maxdepth 3 \( -name "*.xcodeproj" -o -name "project.pbxproj" -o -name "StockFlowTasksWidget.swift" \) -print
+          echo "=== Discovering Xcode project and workspace ==="
+          XCODEPROJ=$(find ios -maxdepth 1 -name "*.xcodeproj" | head -n 1)
+          if [ -z "$XCODEPROJ" ]; then
+            XCODEPROJ="ios/StockFlow.xcodeproj"
+          fi
+          echo "Discovered project: $XCODEPROJ"
           echo "=== Widget target references ==="
-          grep -n "StockFlowWidgetExtension\|StockFlowTasksWidget.swift" ios/mobile.xcodeproj/project.pbxproj || true
-          echo "=== Xcode targets ==="
-          xcodebuild -list -project ios/mobile.xcodeproj || true
+          if [ -f "$XCODEPROJ/project.pbxproj" ]; then
+            grep -n "StockFlowWidgetExtension\|StockFlowTasksWidget.swift" "$XCODEPROJ/project.pbxproj" || true
+          fi
+          echo "=== Xcode targets and schemes ==="
+          xcodebuild -list -project "$XCODEPROJ" || xcodebuild -list -project ios/StockFlow.xcodeproj || true
       - name: Install CocoaPods
         run: |
           cd ios
           pod install
+      - name: Diagnose generated workspace
+        run: |
+          echo "=== Discovering generated workspace ==="
+          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+          if [ -z "$WORKSPACE" ]; then
+            WORKSPACE="ios/StockFlow.xcworkspace"
+          fi
+          echo "Discovered workspace: $WORKSPACE"
+          xcodebuild -list -workspace "$WORKSPACE" || xcodebuild -list -workspace ios/StockFlow.xcworkspace || true
       - name: Patch CocoaPods rsync and script permissions
         run: |
           echo "Patching CocoaPods framework copy scripts..."
@@ -68,9 +85,17 @@ jobs:
       - name: Build unsigned iOS app
         run: |
           set -o pipefail
+          XCODE_WORKSPACE="ios/StockFlow.xcworkspace"
+          if [ ! -d "$XCODE_WORKSPACE" ]; then
+            FOUND_WS=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1)
+            if [ -n "$FOUND_WS" ] && [ -d "$FOUND_WS" ]; then
+              XCODE_WORKSPACE="$FOUND_WS"
+            fi
+          fi
+          echo "Building application with workspace: $XCODE_WORKSPACE, scheme: StockFlow"
           xcodebuild build \
-            -workspace ios/mobile.xcworkspace \
-            -scheme mobile \
+            -workspace "$XCODE_WORKSPACE" \
+            -scheme StockFlow \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
@@ -82,8 +107,16 @@ jobs:
       - name: Build unsigned iOS widget extension
         run: |
           set -o pipefail
+          XCODE_PROJECT="ios/StockFlow.xcodeproj"
+          if [ ! -d "$XCODE_PROJECT" ]; then
+            FOUND_PRJ=$(find ios -maxdepth 1 -name "*.xcodeproj" | head -n 1)
+            if [ -n "$FOUND_PRJ" ] && [ -d "$FOUND_PRJ" ]; then
+              XCODE_PROJECT="$FOUND_PRJ"
+            fi
+          fi
+          echo "Building widget extension with project: $XCODE_PROJECT, target: StockFlowWidgetExtension"
           xcodebuild build \
-            -project ios/mobile.xcodeproj \
+            -project "$XCODE_PROJECT" \
             -target StockFlowWidgetExtension \
             -configuration Release \
             -sdk iphoneos \
@@ -96,11 +129,17 @@ jobs:
       - name: Package IPA with widget extension
         run: |
           set -e
-          APP_PATH="build/Build/Products/Release-iphoneos/mobile.app"
+          APP_PATH="build/Build/Products/Release-iphoneos/StockFlow.app"
           if [ ! -d "$APP_PATH" ]; then
-            FOUND_APP=$(find build -name "mobile.app" | head -n 1)
+            FOUND_APP=$(find build -name "StockFlow.app" | head -n 1)
             if [ -n "$FOUND_APP" ] && [ -d "$FOUND_APP" ]; then
               APP_PATH="$FOUND_APP"
+            fi
+          fi
+          if [ ! -d "$APP_PATH" ]; then
+            FOUND_ANY_APP=$(find build -name "*.app" | head -n 1)
+            if [ -n "$FOUND_ANY_APP" ] && [ -d "$FOUND_ANY_APP" ]; then
+              APP_PATH="$FOUND_ANY_APP"
             fi
           fi
           if [ ! -d "$APP_PATH" ]; then
@@ -124,20 +163,20 @@ jobs:
 
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-          mkdir -p "Payload/mobile.app/PlugIns"
+          mkdir -p "Payload/StockFlow.app/PlugIns"
           # Remove any pre-embedded copy first: BSD cp -R copies INTO an existing
           # destination folder, which can nest .appex/StockFlowWidgetExtension.appex
-          rm -rf "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex"
-          cp -R "$WIDGET_PATH" "Payload/mobile.app/PlugIns/"
+          rm -rf "Payload/StockFlow.app/PlugIns/StockFlowWidgetExtension.appex"
+          cp -R "$WIDGET_PATH" "Payload/StockFlow.app/PlugIns/"
           echo "Verifying widget extension in packaged app..."
-          test -d "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex"
+          test -d "Payload/StockFlow.app/PlugIns/StockFlowWidgetExtension.appex"
           # Guard against nested corruption: extension must NOT contain itself
-          if [ -d "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex/StockFlowWidgetExtension.appex" ]; then
+          if [ -d "Payload/StockFlow.app/PlugIns/StockFlowWidgetExtension.appex/StockFlowWidgetExtension.appex" ]; then
             echo "::error::Nested .appex detected — packaging is corrupt. Investigate cp -R step."
             exit 1
           fi
           # Verify required contents exist
-          test -f "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex/Info.plist" || { echo "::error::Widget Info.plist missing from appex"; exit 1; }
+          test -f "Payload/StockFlow.app/PlugIns/StockFlowWidgetExtension.appex/Info.plist" || { echo "::error::Widget Info.plist missing from appex"; exit 1; }
           /usr/bin/zip -qry StockFlow.ipa Payload
           test -s StockFlow.ipa
           tar -tf StockFlow.ipa | grep -E 'PlugIns/StockFlowWidgetExtension.appex/' | head -n 10
