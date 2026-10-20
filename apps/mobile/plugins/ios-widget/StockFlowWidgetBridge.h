@@ -41,9 +41,31 @@ typedef NSUInteger NSStringEncoding;
 - (NSURL *)URLByAppendingPathComponent:(NSString *)pathComponent;
 @end
 
+@interface NSArray : NSObject
++ (instancetype)array;
+- (NSUInteger)count;
+@end
+
+@interface NSMutableArray : NSArray
++ (instancetype)array;
+- (void)addObject:(id)anObject;
+@end
+
+@interface NSDictionary : NSObject
+- (id)objectForKey:(id)aKey;
+@end
+
+@interface NSSet : NSObject
++ (instancetype)setWithArray:(NSArray *)array;
+- (BOOL)containsObject:(id)anObject;
+@end
+
 @interface NSUserDefaults : NSObject
 - (instancetype)initWithSuiteName:(NSString *)suitename;
 - (void)setObject:(id)value forKey:(NSString *)defaultName;
+- (id)objectForKey:(NSString *)defaultName;
+- (NSArray *)arrayForKey:(NSString *)defaultName;
+- (void)removeObjectForKey:(NSString *)defaultName;
 - (BOOL)synchronize;
 @end
 
@@ -86,4 +108,14 @@ typedef void (^RCTPromiseRejectBlock)(NSString *code, NSString *message, NSError
 #endif
 
 @interface StockFlowWidgetBridge : NSObject <RCTBridgeModule>
+- (void)setWidgetSnapshot:(NSString *)jsonString
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject;
+- (void)refreshWidgets:(RCTPromiseResolveBlock)resolve
+              rejecter:(RCTPromiseRejectBlock)reject;
+- (void)getPendingActions:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject;
+- (void)clearPendingActions:(NSArray *)actionIds
+                   resolver:(RCTPromiseResolveBlock)resolve
+                   rejecter:(RCTPromiseRejectBlock)reject;
 @end

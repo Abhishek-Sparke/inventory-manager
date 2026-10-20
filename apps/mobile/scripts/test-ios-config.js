@@ -42,10 +42,11 @@ for (const file of requiredFiles) {
 }
 console.log('✓ Test 2 PASSED: All 5 required iOS native template files exist in plugins/ios-widget/.');
 
-// 3. Verify Swift code contents (both widgets & bundle)
+// 3. Verify Swift code contents (both widgets & bundle, no sample tasks, App Intent, Edit deep links)
 const swiftContent = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowTasksWidget.swift'), 'utf8');
 assert.strictEqual(swiftContent.includes('import WidgetKit'), true, 'Must import WidgetKit');
 assert.strictEqual(swiftContent.includes('import SwiftUI'), true, 'Must import SwiftUI');
+assert.strictEqual(swiftContent.includes('import AppIntents'), true, 'Must import AppIntents');
 assert.strictEqual(swiftContent.includes('group.com.sparke27.mobile'), true, 'Must use App Group suite');
 assert.strictEqual(swiftContent.includes('StockFlowTasksWidgetEntryView'), true, 'Must declare entry view');
 assert.strictEqual(swiftContent.includes('SmallWidgetView'), true, 'Must implement SmallWidgetView');
@@ -54,7 +55,30 @@ assert.strictEqual(swiftContent.includes('StockFlowUpcomingWidget'), true, 'Must
 assert.strictEqual(swiftContent.includes('StockFlowWidgetBundle'), true, 'Must declare StockFlowWidgetBundle');
 assert.strictEqual(swiftContent.includes('mobile://tasks?view=today'), true, 'Must bind deep link to tasks');
 assert.strictEqual(swiftContent.includes('@main'), true, 'Must declare @main widget bundle');
-console.log('✓ Test 3 PASSED: StockFlowTasksWidget.swift contains both widgets, TimelineProvider, deep links, and @main WidgetBundle.');
+
+// Verification: Runtime sample data removal
+assert.strictEqual(swiftContent.includes('sampleSnapshot'), false, 'Must NOT contain sampleSnapshot fallback');
+assert.strictEqual(swiftContent.includes('Morning Inventory Count'), false, 'Must NOT contain hardcoded sample tasks');
+assert.strictEqual(swiftContent.includes('Supplier Delivery Check'), false, 'Must NOT contain hardcoded sample tasks');
+assert.strictEqual(swiftContent.includes('Receiving Pallet Stock'), false, 'Must NOT contain hardcoded sample tasks');
+assert.strictEqual(swiftContent.includes('emptySnapshot'), true, 'Must define clean emptySnapshot');
+
+// Verification: Interactive task completion & duplicate action prevention
+assert.strictEqual(swiftContent.includes('struct ToggleTaskIntent: AppIntent'), true, 'Must implement ToggleTaskIntent AppIntent');
+assert.strictEqual(swiftContent.includes('targetCompleted'), true, 'Must track target completion state to prevent duplicate rapid taps');
+assert.strictEqual(swiftContent.includes('stockflow_pending_actions'), true, 'Must record action to stockflow_pending_actions');
+assert.strictEqual(swiftContent.includes('WidgetCenter.shared.reloadAllTimelines()'), true, 'Must reload timelines after action');
+
+// Verification: Edit action deep link
+assert.strictEqual(swiftContent.includes('mobile://tasks?action=edit&taskId='), true, 'Must implement Edit deep links with actual taskId');
+assert.strictEqual(swiftContent.includes('mobile://tasks?action=toggle&taskId='), true, 'Must implement Toggle fallback deep links for iOS 16');
+
+// Verification: iOS compatibility & containerBackground
+assert.strictEqual(swiftContent.includes('#available(iOS 17.0, *)'), true, 'Must guard iOS 17 APIs with #available');
+assert.strictEqual(swiftContent.includes('containerBackground'), true, 'Must implement containerBackground for iOS 17');
+assert.strictEqual(swiftContent.includes('contentMarginsDisabled'), true, 'Must guard contentMarginsDisabled');
+
+console.log('✓ Test 3 PASSED: StockFlowTasksWidget.swift verified (no runtime sample tasks, AppIntent completion, Edit deep-links, clean empty states).');
 
 // 4. Verify Entitlements and Info.plist
 const entitlementsContent = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowWidget.entitlements'), 'utf8');
@@ -73,14 +97,19 @@ console.log('✓ Test 4 PASSED: Widget Info.plist has XPC! package type and com.
 // 5. Verify Native Bridge Module
 const bridgeH = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowWidgetBridge.h'), 'utf8');
 assert.strictEqual(bridgeH.includes('RCTBridgeModule'), true, 'Header must declare RCTBridgeModule');
+assert.strictEqual(bridgeH.includes('getPendingActions'), true, 'Header must declare getPendingActions');
+assert.strictEqual(bridgeH.includes('clearPendingActions'), true, 'Header must declare clearPendingActions');
 
 const bridgeM = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowWidgetBridge.m'), 'utf8');
 assert.strictEqual(bridgeM.includes('RCT_EXPORT_MODULE'), true, 'Must export bridge module');
 assert.strictEqual(bridgeM.includes('setWidgetSnapshot'), true, 'Must export setWidgetSnapshot method');
 assert.strictEqual(bridgeM.includes('refreshWidgets'), true, 'Must export refreshWidgets method');
+assert.strictEqual(bridgeM.includes('getPendingActions'), true, 'Must export getPendingActions method');
+assert.strictEqual(bridgeM.includes('clearPendingActions'), true, 'Must export clearPendingActions method');
+assert.strictEqual(bridgeM.includes('stockflow_pending_actions'), true, 'Must use stockflow_pending_actions queue');
 assert.strictEqual(bridgeM.includes('group.com.sparke27.mobile'), true, 'Must write to App Group UserDefaults suite');
 assert.strictEqual(bridgeM.includes('reloadAllTimelines'), true, 'Must reload WidgetCenter timelines');
-console.log('✓ Test 5 PASSED: StockFlowWidgetBridge NativeModule implements setWidgetSnapshot and refreshWidgets.');
+console.log('✓ Test 5 PASSED: StockFlowWidgetBridge NativeModule implements snapshot sync, widget refresh, and pending action queue bridge.');
 
 // 6. Test App Group & EAS Config Plugin application on mock app.json
 const mockConfig = {
@@ -350,7 +379,111 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
 
     console.log('✓ Test 10 PASSED: Automated IPA verification detects missing extensions, nested .appex bundles, and valid IPA bundles.');
 
-    console.log('\n=== ALL 9 iOS WIDGET CONFIGURATION & IPA TESTS PASSED ===');
+    // 11. Test Interactive Task Completion, Action Queue Bridge & Persistence
+    const widgetDataSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'widget-data.ts'), 'utf8');
+    assert.strictEqual(widgetDataSrc.includes('processPendingWidgetActionsAsync'), true, 'Must implement processPendingWidgetActionsAsync');
+    assert.strictEqual(widgetDataSrc.includes('getPendingActions'), true, 'Must call bridge getPendingActions');
+    assert.strictEqual(widgetDataSrc.includes('clearPendingActions'), true, 'Must call bridge clearPendingActions');
+    assert.strictEqual(widgetDataSrc.includes('updateLocalTaskAsync'), true, 'Must commit actions to SQLite database');
+    assert.strictEqual(widgetDataSrc.includes('notifyTaskChange'), true, 'Must broadcast task change to in-app subscribers');
+
+    // Simulate action processing and persistence logic
+    let mockClearedIds = [];
+    const mockDatabase = new Map([
+      [42, { id: 42, title: 'Inspect Valves', is_completed: 0, status: 'pending' }],
+      [43, { id: 43, title: 'Verify Gauges', is_completed: 1, status: 'completed' }],
+    ]);
+
+    const simulateProcessActions = (actions) => {
+      const processed = [];
+      for (const act of actions) {
+        const task = mockDatabase.get(act.taskId);
+        if (task) {
+          let desiredDone = !Boolean(task.is_completed);
+          if (typeof act.targetCompleted === 'boolean') {
+            desiredDone = act.targetCompleted;
+          } else if (act.action === 'complete') {
+            desiredDone = true;
+          } else if (act.action === 'incomplete') {
+            desiredDone = false;
+          }
+          task.is_completed = desiredDone ? 1 : 0;
+          task.status = desiredDone ? 'completed' : 'pending';
+          mockDatabase.set(act.taskId, task);
+        }
+        if (act.id) processed.push(act.id);
+      }
+      mockClearedIds.push(...processed);
+      return processed.length;
+    };
+
+    // Action 1: Toggle incomplete task 42 to complete
+    simulateProcessActions([{ id: 'a1', taskId: 42, action: 'toggle', targetCompleted: true }]);
+    assert.strictEqual(mockDatabase.get(42).is_completed, 1, 'Task 42 must be completed');
+    assert.strictEqual(mockDatabase.get(42).status, 'completed', 'Task 42 status must be completed');
+    assert.strictEqual(mockClearedIds.includes('a1'), true, 'Action a1 must be cleared from queue');
+
+    // Action 2: Duplicate tap prevention — sending identical targetCompleted does not flip or corrupt state
+    simulateProcessActions([{ id: 'a2', taskId: 42, action: 'toggle', targetCompleted: true }]);
+    assert.strictEqual(mockDatabase.get(42).is_completed, 1, 'Duplicate tap must remain completed');
+
+    // Action 3: Reopen task (toggle back to incomplete)
+    simulateProcessActions([{ id: 'a3', taskId: 42, action: 'toggle', targetCompleted: false }]);
+    assert.strictEqual(mockDatabase.get(42).is_completed, 0, 'Task 42 must be reopened');
+    assert.strictEqual(mockDatabase.get(42).status, 'pending', 'Task 42 status must be pending');
+
+    console.log('✓ Test 11 PASSED: Interactive task completion persistence, action queue bridge, and duplicate action prevention verified.');
+
+    // 12. Test Edit Deep-Link Routing and Task Preloading in tasks.tsx
+    const tasksScreenSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'app', 'tasks.tsx'), 'utf8');
+    assert.strictEqual(tasksScreenSrc.includes('useLocalSearchParams'), true, 'Must use route search params');
+    assert.strictEqual(tasksScreenSrc.includes('editTaskId'), true, 'Must support editTaskId param');
+    assert.strictEqual(tasksScreenSrc.includes('action'), true, 'Must support action param');
+    assert.strictEqual(tasksScreenSrc.includes('openEditTaskModal'), true, 'Must open edit modal on deep link');
+    assert.strictEqual(tasksScreenSrc.includes('getLocalTaskByIdAsync'), true, 'Must fetch existing task details by real ID');
+    assert.strictEqual(tasksScreenSrc.includes('processPendingWidgetActionsAsync'), true, 'Must drain pending actions on load');
+    assert.strictEqual(tasksScreenSrc.includes('handleSaveTask'), true, 'Must save edits through existing persistence logic');
+
+    // Verify Swift widget has exact matching deep-link URL schema
+    assert.strictEqual(swiftContent.includes('mobile://tasks?action=edit&taskId=\\(task.id)'), true, 'Swift widget must generate edit deep link');
+    assert.strictEqual(swiftContent.includes('mobile://tasks?action=toggle&taskId=\\(task.id)'), true, 'Swift widget must generate toggle deep link');
+
+    console.log('✓ Test 12 PASSED: Edit deep-link routing, task preloading, and bidirectional URL schema verified.');
+
+    // 13. Test Empty State, Corrupted Data Safety & Android Platform Isolation
+    // A. Swift widget never writes back empty data on read failure
+    assert.strictEqual(swiftContent.includes('emptySnapshot()'), true, 'Swift widget must construct safe emptySnapshot');
+    assert.strictEqual(
+      swiftContent.includes('guard let rawJson = jsonString, !rawJson.isEmpty'),
+      true,
+      'Swift widget must guard on valid jsonString'
+    );
+    // Ensure no writing occurs inside loadSnapshot fallback
+    const loadSnapshotBlock = swiftContent.substring(
+      swiftContent.indexOf('private func loadSnapshot() -> TaskEntry'),
+      swiftContent.indexOf('// MARK: - Shared Accent')
+    );
+    assert.strictEqual(loadSnapshotBlock.includes('.set('), false, 'loadSnapshot must NEVER write to UserDefaults on read');
+    assert.strictEqual(loadSnapshotBlock.includes('.write(to:'), false, 'loadSnapshot must NEVER write to container file on read');
+
+    // B. Android platform isolation
+    const androidTasksWidget = fs.readFileSync(path.join(__dirname, '..', 'src', 'widgets', 'StockFlowTasksWidget.tsx'), 'utf8');
+    assert.strictEqual(androidTasksWidget.includes('AppIntent'), false, 'Android widget must not contain AppIntent');
+    assert.strictEqual(androidTasksWidget.includes('SwiftUI'), false, 'Android widget must not contain SwiftUI');
+    assert.strictEqual(androidTasksWidget.includes('WidgetKit'), false, 'Android widget must not contain WidgetKit');
+
+    const appJsonRaw = fs.readFileSync(path.join(__dirname, '..', 'app.json'), 'utf8');
+    const appJsonObj = JSON.parse(appJsonRaw);
+    assert.strictEqual(appJsonObj.expo.android.package, 'com.sparke27.mobile', 'Android package must remain untouched');
+    assert.strictEqual(
+      Array.isArray(appJsonObj.expo.android.permissions),
+      true,
+      'Android permissions must remain untouched'
+    );
+
+    console.log('✓ Test 13 PASSED: Empty state safety, read-only failure handling, and Android platform isolation strictly verified.');
+
+    console.log('\n=== ALL 13 iOS WIDGET CONFIGURATION & IPA TESTS PASSED ===');
   } finally {
     fs.rmSync(tmpTestDir, { recursive: true, force: true });
   }

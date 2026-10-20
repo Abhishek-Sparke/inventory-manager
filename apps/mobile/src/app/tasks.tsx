@@ -38,7 +38,7 @@ import {
   markTasksFetched,
   setFetchInProgress,
 } from '@/services/task-sync';
-import { syncWidgetDataAsync } from '@/services/widget-data';
+import { syncWidgetDataAsync, processPendingWidgetActionsAsync } from '@/services/widget-data';
 import {
   fetchDailyProgress,
   fetchDailyProgressList,
@@ -85,7 +85,12 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 }
 
 export default function TasksScreen() {
-  const params = useLocalSearchParams<{ view?: string }>();
+  const params = useLocalSearchParams<{
+    view?: string;
+    action?: string;
+    taskId?: string;
+    editTaskId?: string;
+  }>();
   const [activeTab, setActiveTab] = useState<UnifiedViewTab>(
     params.view === 'calendar' ? 'calendar' : 'today'
   );
@@ -123,6 +128,46 @@ export default function TasksScreen() {
     }
   }, [params.view]);
 
+  // Handle widget deep link actions (edit or toggle)
+  useEffect(() => {
+    const rawTargetId = params.editTaskId || (params.action === 'edit' ? params.taskId : undefined);
+    if (rawTargetId) {
+      const targetId = parseInt(rawTargetId, 10);
+      if (!isNaN(targetId)) {
+        (async () => {
+          try {
+            let task = tasks.find(t => t.id === targetId);
+            if (!task) {
+              task = (await getLocalTaskByIdAsync(targetId)) || undefined;
+            }
+            if (task) {
+              openEditTaskModal(task);
+            }
+          } catch (err) {
+            console.warn('[Tasks] Failed to open edit modal for deep link:', err);
+          }
+        })();
+      }
+    } else if (params.action === 'toggle' && params.taskId) {
+      const targetId = parseInt(params.taskId, 10);
+      if (!isNaN(targetId)) {
+        (async () => {
+          try {
+            let task = tasks.find(t => t.id === targetId);
+            if (!task) {
+              task = (await getLocalTaskByIdAsync(targetId)) || undefined;
+            }
+            if (task) {
+              await handleToggleTask(task);
+            }
+          } catch (err) {
+            console.warn('[Tasks] Failed to toggle task for deep link:', err);
+          }
+        })();
+      }
+    }
+  }, [params.action, params.taskId, params.editTaskId, tasks.length]);
+
   // Load Tasks and Daily Progress
   const loadData = useCallback(async (pullToRefresh = false, force = false) => {
     if (!force && !pullToRefresh && !shouldFetchTasks(1500)) {
@@ -140,6 +185,13 @@ export default function TasksScreen() {
     let didTimeout = false;
     let controller: AbortController | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    // 0. On iOS, process any queued widget actions before reading SQLite
+    if (Platform.OS === 'ios') {
+      try {
+        await processPendingWidgetActionsAsync();
+      } catch {}
+    }
 
     // 1. Immediately read from local SQLite database (instant offline load)
     try {

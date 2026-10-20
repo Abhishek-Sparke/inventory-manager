@@ -385,6 +385,85 @@ export async function syncWidgetDataFromDbAsync(
 }
 
 /**
+ * Interface representing a pending action queued by a native widget.
+ */
+export interface PendingWidgetAction {
+  id: string;
+  taskId: number;
+  action: 'toggle' | 'complete' | 'incomplete';
+  targetCompleted?: boolean;
+  timestamp: string;
+}
+
+/**
+ * Processes queued interactive actions from iOS widgets (e.g. task completion toggles).
+ * Commits each action to the authoritative local SQLite database, removes processed actions
+ * from the native bridge queue, and broadcasts changes to in-app listeners.
+ */
+export async function processPendingWidgetActionsAsync(): Promise<number> {
+  if (Platform.OS !== 'ios') {
+    return 0;
+  }
+
+  try {
+    const { StockFlowWidgetBridge } = NativeModules;
+    if (!StockFlowWidgetBridge?.getPendingActions) {
+      return 0;
+    }
+
+    const rawActions = await StockFlowWidgetBridge.getPendingActions();
+    if (!Array.isArray(rawActions) || rawActions.length === 0) {
+      return 0;
+    }
+
+    const { getLocalTaskByIdAsync, updateLocalTaskAsync } = require('./database');
+    const { notifyTaskChange } = require('./task-sync');
+
+    const processedIds: string[] = [];
+    for (const act of rawActions) {
+      if (!act || typeof act.taskId !== 'number') continue;
+      try {
+        const existing = await getLocalTaskByIdAsync(act.taskId);
+        if (existing) {
+          const currentDone = Boolean(existing.is_completed || existing.status === 'completed');
+          let desiredDone = !currentDone;
+          if (typeof act.targetCompleted === 'boolean') {
+            desiredDone = act.targetCompleted;
+          } else if (act.action === 'complete') {
+            desiredDone = true;
+          } else if (act.action === 'incomplete') {
+            desiredDone = false;
+          }
+
+          // Commit to authoritative SQLite task store
+          await updateLocalTaskAsync(act.taskId, {
+            is_completed: desiredDone,
+            status: desiredDone ? 'completed' : 'pending',
+          });
+        }
+        if (act.id) {
+          processedIds.push(act.id);
+        }
+      } catch (err) {
+        console.warn(`[WidgetData] Failed to process pending action for task ${act.taskId}:`, err);
+      }
+    }
+
+    if (processedIds.length > 0) {
+      if (StockFlowWidgetBridge?.clearPendingActions) {
+        await StockFlowWidgetBridge.clearPendingActions(processedIds);
+      }
+      notifyTaskChange();
+    }
+
+    return processedIds.length;
+  } catch (error) {
+    console.warn('[WidgetData] Failed to process pending widget actions:', error);
+    return 0;
+  }
+}
+
+/**
  * Refreshes the native Android and iOS home-screen widgets automatically.
  * Automatically loads fresh data from local SQLite for current date, falling back to cached snapshot.
  * Safe to call on app startup and on AppState transitions without hitting the network.
@@ -397,6 +476,13 @@ export async function refreshWidgetFromSnapshotAsync(
   }
 
   try {
+    // On iOS, drain any queued interactive actions from widget before refreshing snapshot
+    if (Platform.OS === 'ios') {
+      try {
+        await processPendingWidgetActionsAsync();
+      } catch {}
+    }
+
     // Attempt fresh calculation from SQLite first so new day/midnight rollover is accurate
     try {
       await syncWidgetDataFromDbAsync(new Date(), installationId);
@@ -416,5 +502,6 @@ export async function refreshWidgetFromSnapshotAsync(
     return false;
   }
 }
+
 
 

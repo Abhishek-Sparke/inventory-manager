@@ -1,5 +1,6 @@
 import WidgetKit
 import SwiftUI
+import AppIntents
 
 // MARK: - Data Models
 
@@ -31,10 +32,111 @@ struct StockFlowWidgetSnapshot: Codable {
 struct TaskEntry: TimelineEntry {
     let date: Date
     let snapshot: StockFlowWidgetSnapshot
-    /// `true` when snapshot is synthesised sample data (App Group inaccessible or first install).
-    /// Views use this to decide whether to show a "Tap to sync" badge.
     let isSampleData: Bool
     let isStale: Bool
+}
+
+// MARK: - App Intent for Interactive Task Completion (iOS 17+)
+
+@available(iOS 17.0, *)
+struct ToggleTaskIntent: AppIntent {
+    static var title: LocalizedStringResource = "Toggle Task Completion"
+    static var description = IntentDescription("Toggles task completion status in StockFlow.")
+
+    @Parameter(title: "Task ID")
+    var taskId: Int
+
+    @Parameter(title: "Target Completion State")
+    var targetCompleted: Bool
+
+    init() {
+        self.taskId = 0
+        self.targetCompleted = false
+    }
+
+    init(taskId: Int, targetCompleted: Bool) {
+        self.taskId = taskId
+        self.targetCompleted = targetCompleted
+    }
+
+    func perform() async throws -> some IntentResult {
+        let suiteName = "group.com.sparke27.mobile"
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else {
+            return .result()
+        }
+
+        // 1. Queue action reliably in App Group UserDefaults
+        var pending = (sharedDefaults.array(forKey: "stockflow_pending_actions") as? [[String: Any]]) ?? []
+
+        // Prevent repeated rapid taps from corrupting task state:
+        // If an action for this exact taskId and target state is already queued, do not duplicate
+        if let lastAction = pending.last(where: { ($0["taskId"] as? Int) == taskId }),
+           let lastTarget = lastAction["targetCompleted"] as? Bool,
+           lastTarget == targetCompleted {
+            // Already queued for this target state
+        } else {
+            let actionItem: [String: Any] = [
+                "id": UUID().uuidString,
+                "taskId": taskId,
+                "action": "toggle",
+                "targetCompleted": targetCompleted,
+                "timestamp": ISO8601DateFormatter().string(from: Date())
+            ]
+            pending.append(actionItem)
+            sharedDefaults.set(pending, forKey: "stockflow_pending_actions")
+        }
+
+        // 2. Optimistically update cached snapshot in App Group so the widget immediately reflects the change
+        if let rawJson = sharedDefaults.string(forKey: "stockflow_widget_snapshot"),
+           let data = rawJson.data(using: .utf8),
+           var snapshot = try? JSONDecoder().decode(StockFlowWidgetSnapshot.self, from: data) {
+
+            var todayTasks = snapshot.today?.tasks ?? []
+            if let idx = todayTasks.firstIndex(where: { $0.id == taskId }) {
+                let current = todayTasks[idx]
+                let updatedTask = WidgetTaskItem(
+                    id: current.id,
+                    title: current.title,
+                    timeFormatted: current.timeFormatted,
+                    dateFormatted: current.dateFormatted,
+                    priority: current.priority,
+                    isCompleted: targetCompleted
+                )
+                todayTasks[idx] = updatedTask
+                let newCompleted = todayTasks.filter { $0.isCompleted }.count
+                let total = todayTasks.count
+                let newPercent = total > 0 ? Int(round(Double(newCompleted) / Double(total) * 100.0)) : 0
+                let updatedToday = WidgetDayData(
+                    total: total,
+                    completed: newCompleted,
+                    percent: newPercent,
+                    tasks: todayTasks
+                )
+                snapshot = StockFlowWidgetSnapshot(
+                    installationId: snapshot.installationId,
+                    updatedAt: ISO8601DateFormatter().string(from: Date()),
+                    overallPercent: newPercent,
+                    today: updatedToday,
+                    tomorrow: snapshot.tomorrow,
+                    upcoming7Days: snapshot.upcoming7Days
+                )
+                if let updatedData = try? JSONEncoder().encode(snapshot),
+                   let updatedStr = String(data: updatedData, encoding: .utf8) {
+                    sharedDefaults.set(updatedStr, forKey: "stockflow_widget_snapshot")
+                    if let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: suiteName) {
+                        let fileURL = containerURL.appendingPathComponent("stockflow_widget_snapshot.json")
+                        try? updatedStr.write(to: fileURL, atomically: true, encoding: .utf8)
+                    }
+                }
+            }
+        }
+        sharedDefaults.synchronize()
+
+        // 3. Reload timelines immediately
+        WidgetCenter.shared.reloadAllTimelines()
+
+        return .result()
+    }
 }
 
 // MARK: - Timeline Provider
@@ -43,15 +145,10 @@ struct TaskTimelineProvider: TimelineProvider {
     typealias Entry = TaskEntry
 
     func placeholder(in context: Context) -> TaskEntry {
-        TaskEntry(date: Date(), snapshot: sampleSnapshot(), isSampleData: true, isStale: false)
+        TaskEntry(date: Date(), snapshot: emptySnapshot(), isSampleData: false, isStale: false)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (TaskEntry) -> Void) {
-        // Widget gallery picker always shows rich preview cards, never blank content
-        if context.isPreview {
-            completion(TaskEntry(date: Date(), snapshot: sampleSnapshot(), isSampleData: true, isStale: false))
-            return
-        }
         let entry = loadSnapshot()
         completion(entry)
     }
@@ -61,8 +158,6 @@ struct TaskTimelineProvider: TimelineProvider {
         let now = Date()
         let calendar = Calendar.current
 
-        // Refresh every 30 minutes OR at midnight rollover (whichever is earlier).
-        // This is the maximum practical cadence – the OS may defer updates on Low Power Mode.
         let in30Minutes = calendar.date(byAdding: .minute, value: 30, to: now)
             ?? now.addingTimeInterval(1800)
         let nextMidnight = calendar.startOfDay(
@@ -76,9 +171,20 @@ struct TaskTimelineProvider: TimelineProvider {
 
     // MARK: - Private helpers
 
-    /// Attempts to read live data from the shared App Group.
-    /// Returns a sample-data entry when the App Group is inaccessible (e.g. sideloading with
-    /// a free Apple Developer account that cannot provision `group.com.sparke27.mobile`).
+    private func emptySnapshot() -> StockFlowWidgetSnapshot {
+        StockFlowWidgetSnapshot(
+            installationId: nil,
+            updatedAt: nil,
+            overallPercent: 0,
+            today: WidgetDayData(total: 0, completed: 0, percent: 0, tasks: []),
+            tomorrow: WidgetDayData(total: 0, completed: 0, percent: 0, tasks: []),
+            upcoming7Days: WidgetDayData(total: 0, completed: 0, percent: 0, tasks: [])
+        )
+    }
+
+    /// Reads live data from the shared App Group.
+    /// If App Group is unavailable, corrupted, or empty, safely returns an empty state.
+    /// Never interprets a failed read as an empty write to persistent storage.
     private func loadSnapshot() -> TaskEntry {
         let suiteName = "group.com.sparke27.mobile"
         var jsonString: String?
@@ -103,8 +209,9 @@ struct TaskTimelineProvider: TimelineProvider {
               let data = rawJson.data(using: .utf8),
               let snapshot = try? JSONDecoder().decode(StockFlowWidgetSnapshot.self, from: data)
         else {
-            // App Group is inaccessible – fall back to sample data so the widget is always visible
-            return TaskEntry(date: Date(), snapshot: sampleSnapshot(), isSampleData: true, isStale: false)
+            // App Group unavailable, corrupted, or no data written yet:
+            // Return safe empty snapshot without touching storage.
+            return TaskEntry(date: Date(), snapshot: emptySnapshot(), isSampleData: false, isStale: false)
         }
 
         var isStale = false
@@ -151,47 +258,9 @@ struct TaskTimelineProvider: TimelineProvider {
 
         return TaskEntry(date: Date(), snapshot: effectiveSnapshot, isSampleData: false, isStale: isStale)
     }
-
-    private func sampleSnapshot() -> StockFlowWidgetSnapshot {
-        StockFlowWidgetSnapshot(
-            installationId: "sample",
-            updatedAt: ISO8601DateFormatter().string(from: Date()),
-            overallPercent: 67,
-            today: WidgetDayData(
-                total: 3,
-                completed: 2,
-                percent: 67,
-                tasks: [
-                    WidgetTaskItem(id: 1, title: "Morning Inventory Count",    timeFormatted: "09:00", dateFormatted: "Today",    priority: "high",   isCompleted: true),
-                    WidgetTaskItem(id: 2, title: "Supplier Delivery Check",    timeFormatted: "13:30", dateFormatted: "Today",    priority: "medium", isCompleted: true),
-                    WidgetTaskItem(id: 3, title: "Evening Restock Audit",      timeFormatted: "17:45", dateFormatted: "Today",    priority: "high",   isCompleted: false),
-                ]
-            ),
-            tomorrow: WidgetDayData(
-                total: 2,
-                completed: 0,
-                percent: 0,
-                tasks: [
-                    WidgetTaskItem(id: 4, title: "Receiving Pallet Stock", timeFormatted: "10:00", dateFormatted: "Tomorrow", priority: "medium", isCompleted: false),
-                    WidgetTaskItem(id: 5, title: "Vendor SLA Review",      timeFormatted: "15:00", dateFormatted: "Tomorrow", priority: "high",   isCompleted: false),
-                ]
-            ),
-            upcoming7Days: WidgetDayData(
-                total: 4,
-                completed: 0,
-                percent: 0,
-                tasks: [
-                    WidgetTaskItem(id: 4, title: "Receiving Pallet Stock",     timeFormatted: "10:00", dateFormatted: "Tomorrow", priority: "medium", isCompleted: false),
-                    WidgetTaskItem(id: 5, title: "Vendor SLA Review",          timeFormatted: "15:00", dateFormatted: "Tomorrow", priority: "high",   isCompleted: false),
-                    WidgetTaskItem(id: 6, title: "Warehouse Safety Drill",     timeFormatted: "11:30", dateFormatted: "Friday",   priority: "low",    isCompleted: false),
-                    WidgetTaskItem(id: 7, title: "Quarterly Stock Valuation",  timeFormatted: "09:00", dateFormatted: "Next Mon", priority: "high",   isCompleted: false),
-                ]
-            )
-        )
-    }
 }
 
-// MARK: - Shared accent colour
+// MARK: - Shared Accent & Background Colors
 
 private let accentBlue = Color(red: 0.22, green: 0.74, blue: 0.97)
 private let bgDark     = Color(red: 0.06, green: 0.09, blue: 0.16)
@@ -228,7 +297,7 @@ struct SmallWidgetView: View {
         let percent   = today?.percent ?? 0
 
         VStack(alignment: .leading, spacing: 6) {
-            // ── Header ──────────────────────────────────────────────
+            // Header
             HStack {
                 HStack(spacing: 4) {
                     Image(systemName: "bolt.fill")
@@ -246,7 +315,7 @@ struct SmallWidgetView: View {
                 }
             }
 
-            // ── Progress bar (only shown when there are tasks) ──────
+            // Progress bar
             if total > 0 {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -264,14 +333,14 @@ struct SmallWidgetView: View {
                 .frame(height: 4)
             }
 
-            // ── Body ────────────────────────────────────────────────
+            // Body
             if total == 0 {
                 Spacer()
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.isSampleData ? "Open StockFlow" : "All Caught Up")
+                    Text("All Caught Up")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.primary)
-                    Text(entry.isSampleData ? "Tap to load tasks" : "No tasks today")
+                    Text("No tasks today")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
@@ -280,15 +349,34 @@ struct SmallWidgetView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(tasks.prefix(2)) { task in
                         HStack(spacing: 5) {
-                            Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(task.isCompleted ? Color.green : accentBlue)
+                            if #available(iOS 17.0, *) {
+                                Button(intent: ToggleTaskIntent(taskId: task.id, targetCompleted: !task.isCompleted)) {
+                                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(task.isCompleted ? Color.green : accentBlue)
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Link(destination: URL(string: "mobile://tasks?action=toggle&taskId=\(task.id)")!) {
+                                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(task.isCompleted ? Color.green : accentBlue)
+                                }
+                            }
+
                             Text(task.title)
                                 .font(.system(size: 10))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.8)
                                 .foregroundStyle(task.isCompleted ? .secondary : .primary)
+
                             Spacer(minLength: 0)
+
+                            Link(destination: URL(string: "mobile://tasks?action=edit&taskId=\(task.id)")!) {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(accentBlue)
+                            }
                         }
                     }
                     if total > 2 {
@@ -319,7 +407,7 @@ struct MediumWidgetView: View {
         let remainingCount = max(0, total - 3)
 
         VStack(alignment: .leading, spacing: 6) {
-            // ── Header ──────────────────────────────────────────────
+            // Header
             HStack {
                 HStack(spacing: 4) {
                     Image(systemName: "bolt.fill")
@@ -335,10 +423,6 @@ struct MediumWidgetView: View {
                         Text("⚠️ Tap to sync")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(.orange)
-                    } else if entry.isSampleData {
-                        Text("Preview")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
                     } else if total > 0 {
                         Text("\(completed)/\(total) Done (\(percent)%)")
                             .font(.system(size: 11, weight: .bold))
@@ -351,7 +435,7 @@ struct MediumWidgetView: View {
                 }
             }
 
-            // ── Progress bar ─────────────────────────────────────────
+            // Progress bar
             if total > 0 {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -369,20 +453,20 @@ struct MediumWidgetView: View {
                 .frame(height: 5)
             }
 
-            // ── Body ─────────────────────────────────────────────────
+            // Body
             if total == 0 {
                 Spacer()
                 HStack {
                     Spacer()
                     VStack(spacing: 3) {
-                        Image(systemName: entry.isSampleData ? "arrow.triangle.2.circlepath" : "checklist")
+                        Image(systemName: "checklist")
                             .font(.system(size: 18))
                             .foregroundStyle(.secondary)
-                        Text(entry.isSampleData ? "Open StockFlow to sync tasks" : "No tasks scheduled for today")
+                        Text("No tasks scheduled for today")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Color(white: 0.8))
                             .multilineTextAlignment(.center)
-                        Text(entry.isSampleData ? "Tap to load your schedule" : "All caught up • Tap to open app")
+                        Text("All caught up • Tap to open app")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -394,9 +478,20 @@ struct MediumWidgetView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(tasks.prefix(3)) { task in
                         HStack(spacing: 6) {
-                            Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(task.isCompleted ? Color.green : accentBlue)
+                            if #available(iOS 17.0, *) {
+                                Button(intent: ToggleTaskIntent(taskId: task.id, targetCompleted: !task.isCompleted)) {
+                                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(task.isCompleted ? Color.green : accentBlue)
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Link(destination: URL(string: "mobile://tasks?action=toggle&taskId=\(task.id)")!) {
+                                    Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(task.isCompleted ? Color.green : accentBlue)
+                                }
+                            }
 
                             Text(task.title)
                                 .font(.system(size: 11, weight: .medium))
@@ -410,6 +505,20 @@ struct MediumWidgetView: View {
                                 Text(task.timeFormatted)
                                     .font(.system(size: 10, weight: .regular))
                                     .foregroundStyle(.secondary)
+                            }
+
+                            Link(destination: URL(string: "mobile://tasks?action=edit&taskId=\(task.id)")!) {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "pencil")
+                                        .font(.system(size: 9, weight: .medium))
+                                    Text("Edit")
+                                        .font(.system(size: 9, weight: .medium))
+                                }
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color(white: 0.18))
+                                .cornerRadius(4)
+                                .foregroundStyle(accentBlue)
                             }
                         }
                     }
@@ -459,7 +568,7 @@ struct UpcomingSmallWidgetView: View {
         let total    = upcoming?.total ?? tasks.count
 
         VStack(alignment: .leading, spacing: 6) {
-            // ── Header ──────────────────────────────────────────────
+            // Header
             HStack {
                 HStack(spacing: 4) {
                     Image(systemName: "calendar.badge.clock")
@@ -477,7 +586,7 @@ struct UpcomingSmallWidgetView: View {
                 }
             }
 
-            // ── Body ─────────────────────────────────────────────────
+            // Body
             if total == 0 {
                 Spacer()
                 VStack(alignment: .leading, spacing: 2) {
@@ -538,7 +647,7 @@ struct UpcomingMediumWidgetView: View {
         let remainingCount = max(0, total - 3)
 
         VStack(alignment: .leading, spacing: 6) {
-            // ── Header ──────────────────────────────────────────────
+            // Header
             HStack {
                 HStack(spacing: 4) {
                     Image(systemName: "calendar.badge.clock")
@@ -560,7 +669,7 @@ struct UpcomingMediumWidgetView: View {
                 }
             }
 
-            // ── Body ─────────────────────────────────────────────────
+            // Body
             if total == 0 {
                 Spacer()
                 HStack {
@@ -611,6 +720,12 @@ struct UpcomingMediumWidgetView: View {
                                     .font(.system(size: 10, weight: .regular))
                                     .foregroundStyle(.secondary)
                             }
+
+                            Link(destination: URL(string: "mobile://tasks?action=edit&taskId=\(task.id)")!) {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(accentBlue)
+                            }
                         }
                     }
 
@@ -632,11 +747,8 @@ struct UpcomingMediumWidgetView: View {
 // MARK: - iOS 16/17 containerBackground Compatibility
 
 extension View {
-    /// Applies the WidgetKit-required `.containerBackground(_:for:)` on iOS 17+.
-    /// On iOS 16 (minimum supported target), falls back to a plain `.background()`.
-    ///
-    /// Both the app and the WidgetKit extension have `IPHONEOS_DEPLOYMENT_TARGET = 16.4`,
-    /// which matches the expo-modules-core podspec minimum.
+    /// Applies WidgetKit-required `.containerBackground(_:for:)` on iOS 17+.
+    /// On iOS 16.4 (minimum supported target), falls back to `.background()`.
     @ViewBuilder
     func widgetBackground(_ color: Color) -> some View {
         if #available(iOS 17.0, *) {
@@ -661,7 +773,7 @@ struct StockFlowTasksWidget: Widget {
         .supportedFamilies([.systemSmall, .systemMedium])
 
         // contentMarginsDisabled() was introduced in iOS 17 / WidgetKit 2.0.
-        // Guard it so the extension still compiles and runs cleanly on iOS 16.4.
+        // Guard it so the extension compiles and runs cleanly on iOS 16.4.
         if #available(iOS 17.0, *) {
             return config.contentMarginsDisabled()
         } else {

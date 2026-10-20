@@ -72,4 +72,57 @@ RCT_EXPORT_METHOD(refreshWidgets:(RCTPromiseResolveBlock)resolve
     }
 }
 
+RCT_EXPORT_METHOD(getPendingActions:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        NSString *suiteName = @"group.com.sparke27.mobile";
+        NSUserDefaults *sharedDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
+        NSArray *pending = nil;
+        if (sharedDefaults) {
+            pending = [sharedDefaults arrayForKey:@"stockflow_pending_actions"];
+        }
+        if (!pending) {
+            pending = [NSArray array];
+        }
+        resolve(pending);
+    } @catch (NSException *exception) {
+        reject(@"GET_ACTIONS_ERROR", exception.reason, nil);
+    }
+}
+
+RCT_EXPORT_METHOD(clearPendingActions:(NSArray *)actionIds
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+    @try {
+        NSString *suiteName = @"group.com.sparke27.mobile";
+        NSUserDefaults *sharedDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
+        if (sharedDefaults) {
+            if (!actionIds || [actionIds count] == 0) {
+                [sharedDefaults removeObjectForKey:@"stockflow_pending_actions"];
+            } else {
+                NSArray *current = [sharedDefaults arrayForKey:@"stockflow_pending_actions"];
+                if (current) {
+                    NSMutableArray *filtered = [NSMutableArray array];
+                    NSSet *idSet = [NSSet setWithArray:actionIds];
+                    for (id item in current) {
+                        if ([item isKindOfClass:[NSDictionary class]]) {
+                            NSString *itemId = [item objectForKey:@"id"];
+                            if (itemId && ![idSet containsObject:itemId]) {
+                                [filtered addObject:item];
+                            }
+                        }
+                    }
+                    [sharedDefaults setObject:filtered forKey:@"stockflow_pending_actions"];
+                }
+            }
+            [sharedDefaults synchronize];
+        }
+        resolve(@(YES));
+    } @catch (NSException *exception) {
+        reject(@"CLEAR_ACTIONS_ERROR", exception.reason, nil);
+    }
+}
+
 @end
