@@ -98,6 +98,17 @@ function verifyIpa(targetPath) {
     }
     console.log(`✓ Embedded app extension found: PlugIns/${EXPECTED_EXTENSION_NAME}.appex`);
 
+    // 2B. Guard against nested .appex corruption (BSD cp -R bug)
+    const nestedAppex = path.join(widgetAppexDir, `${EXPECTED_EXTENSION_NAME}.appex`);
+    if (fs.existsSync(nestedAppex)) {
+      throw new Error(
+        `Nested .appex detected: ${EXPECTED_EXTENSION_NAME}.appex contains itself. ` +
+          `This is caused by a missing 'rm -rf' before 'cp -R' in the packaging step. ` +
+          `The widget will NOT appear on device.`
+      );
+    }
+    console.log(`✓ No nested .appex corruption detected`);
+
     // 3. Verify extension Info.plist
     const infoPlistPath = path.join(widgetAppexDir, 'Info.plist');
     if (!fs.existsSync(infoPlistPath)) {

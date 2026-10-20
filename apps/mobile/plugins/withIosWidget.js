@@ -371,7 +371,7 @@ module.exports = function withIosWidget(config) {
         const productName = String(buildConfig.buildSettings?.PRODUCT_NAME || '').replace(/"/g, '');
         if (productName === EXTENSION_TARGET_NAME) {
           buildConfig.buildSettings.SWIFT_VERSION = '5.0';
-          buildConfig.buildSettings.IPHONEOS_DEPLOYMENT_TARGET = '16.0';
+          buildConfig.buildSettings.IPHONEOS_DEPLOYMENT_TARGET = '16.4';
           buildConfig.buildSettings.PRODUCT_NAME = `"${EXTENSION_TARGET_NAME}"`;
           buildConfig.buildSettings.PRODUCT_BUNDLE_IDENTIFIER = `"${widgetBundleId}"`;
           buildConfig.buildSettings.INFOPLIST_FILE = '"StockFlowWidget/Info.plist"';

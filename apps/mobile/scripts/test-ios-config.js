@@ -227,13 +227,32 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
         assert.strictEqual(c.buildSettings.CODE_SIGN_ENTITLEMENTS, '"StockFlowWidget/StockFlowWidget.entitlements"');
         assert.strictEqual(c.buildSettings.SKIP_INSTALL, 'YES');
         assert.strictEqual(c.buildSettings.SWIFT_VERSION, '5.0');
-        assert.strictEqual(c.buildSettings.IPHONEOS_DEPLOYMENT_TARGET, '16.0');
+        // Must be 16.4 to match expo-modules-core podspec (Expo SDK 57)
+        assert.strictEqual(c.buildSettings.IPHONEOS_DEPLOYMENT_TARGET, '16.4');
       }
     }
     assert.strictEqual(extConfigFound, true, 'StockFlowWidgetExtension XCBuildConfiguration must exist');
     console.log('✓ Test 7 PASSED: Xcode project generates Target Dependency, Embed App Extensions build phase (PlugIns), and build settings.');
 
-    // 8. Test Idempotency: re-running dangerousMod does not corrupt or duplicate phases
+    // 8. Deployment target correctness: must equal 16.4 (expo-modules-core minimum)
+    for (const cId in configs) {
+      const c = configs[cId];
+      if (c.buildSettings?.PRODUCT_NAME?.includes('StockFlowWidgetExtension')) {
+        assert.notStrictEqual(
+          c.buildSettings.IPHONEOS_DEPLOYMENT_TARGET,
+          '16.0',
+          'Deployment target must be 16.4, not 16.0: expo-modules-core podspec requires iOS 16.4'
+        );
+        assert.strictEqual(
+          parseFloat(c.buildSettings.IPHONEOS_DEPLOYMENT_TARGET) >= 16.4,
+          true,
+          'Deployment target must be >= 16.4'
+        );
+      }
+    }
+    console.log('✓ Test 8 PASSED: Widget extension deployment target is 16.4 (matches expo-modules-core podspec minimum).');
+
+    // 9. Idempotency: re-running dangerousMod must not duplicate phases
     await dangerousMod(modConfig);
     const parsedProj2 = xcode.project(savedPbxprojPath);
     parsedProj2.parseSync();
@@ -242,7 +261,7 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
       (k) => !k.endsWith('_comment') && copyFiles2[k].dstSubfolderSpec === 13
     ).length;
     assert.strictEqual(embedPhasesCount, 1, 'Re-running prebuild must not duplicate Embed App Extensions phase');
-    console.log('✓ Test 8 PASSED: Prebuild plugin is idempotent across multiple prebuild invocations.');
+    console.log('✓ Test 9 PASSED: Prebuild plugin is idempotent across multiple prebuild invocations.');
 
     // 9. Automated Physical-Device IPA Verification Test
     console.log('\n--- Running Automated Physical-Device IPA Verification Test ---');
@@ -287,7 +306,7 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
     const verifySuccess = verifyIpa(mockIpaPath);
     assert.strictEqual(verifySuccess, true, 'verifyIpa must return true for valid IPA');
 
-    // Verify broken IPA fails (e.g. missing PlugIns)
+    // Verify broken IPA (missing PlugIns) fails with the right error
     const brokenIpaDir = path.join(tmpTestDir, 'broken-ipa-test');
     const brokenPayloadDir = path.join(brokenIpaDir, 'Payload', 'mobile.app');
     fs.mkdirSync(brokenPayloadDir, { recursive: true });
@@ -302,7 +321,34 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
       assert.strictEqual(expectedErr.message.includes('Missing PlugIns'), true);
     }
     assert.strictEqual(failedAsExpected, true, 'verifyIpa must fail if PlugIns is missing');
-    console.log('✓ Test 9 PASSED: Automated IPA verification reliably validates physical-device IPA bundles.');
+
+    // Verify nested .appex corruption is detected
+    const nestedIpaDir = path.join(tmpTestDir, 'nested-appex-test');
+    const nestedAppexDir = path.join(
+      nestedIpaDir, 'Payload', 'mobile.app', 'PlugIns',
+      'StockFlowWidgetExtension.appex', 'StockFlowWidgetExtension.appex'
+    );
+    fs.mkdirSync(nestedAppexDir, { recursive: true });
+    fs.copyFileSync(
+      path.join(iosWidgetDir, 'Info.plist'),
+      path.join(path.dirname(nestedAppexDir), 'Info.plist')
+    );
+    const nestedIpaPath = path.join(tmpTestDir, 'StockFlow-Nested.ipa');
+    execSync(`tar -cf "${nestedIpaPath}" -C "${nestedIpaDir}" Payload`, { stdio: 'pipe' });
+    let nestedCorruptionDetected = false;
+    try {
+      verifyIpa(nestedIpaPath);
+    } catch (nestedErr) {
+      nestedCorruptionDetected = true;
+      assert.strictEqual(
+        nestedErr.message.toLowerCase().includes('nested'),
+        true,
+        'Error must mention nested .appex'
+      );
+    }
+    assert.strictEqual(nestedCorruptionDetected, true, 'verifyIpa must fail on nested .appex corruption');
+
+    console.log('✓ Test 10 PASSED: Automated IPA verification detects missing extensions, nested .appex bundles, and valid IPA bundles.');
 
     console.log('\n=== ALL 9 iOS WIDGET CONFIGURATION & IPA TESTS PASSED ===');
   } finally {

@@ -125,9 +125,19 @@ jobs:
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
           mkdir -p "Payload/mobile.app/PlugIns"
+          # Remove any pre-embedded copy first: BSD cp -R copies INTO an existing
+          # destination folder, which can nest .appex/StockFlowWidgetExtension.appex
+          rm -rf "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex"
           cp -R "$WIDGET_PATH" "Payload/mobile.app/PlugIns/"
           echo "Verifying widget extension in packaged app..."
           test -d "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex"
+          # Guard against nested corruption: extension must NOT contain itself
+          if [ -d "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex/StockFlowWidgetExtension.appex" ]; then
+            echo "::error::Nested .appex detected — packaging is corrupt. Investigate cp -R step."
+            exit 1
+          fi
+          # Verify required contents exist
+          test -f "Payload/mobile.app/PlugIns/StockFlowWidgetExtension.appex/Info.plist" || { echo "::error::Widget Info.plist missing from appex"; exit 1; }
           /usr/bin/zip -qry StockFlow.ipa Payload
           test -s StockFlow.ipa
           tar -tf StockFlow.ipa | grep -E 'PlugIns/StockFlowWidgetExtension.appex/' | head -n 10
