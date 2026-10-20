@@ -257,6 +257,19 @@ export async function scheduleTaskReminderAsync(
       },
     });
 
+    // Persist reminder identifier and trigger time to local SQLite database
+    try {
+      const { saveTaskReminderRecordAsync } = require('@/services/database');
+      await saveTaskReminderRecordAsync({
+        taskId: task.id,
+        notificationId: identifier,
+        triggerTime: triggerDate.toISOString(),
+        offsetMinutes,
+      });
+    } catch (dbErr) {
+      console.warn(`[Notifications] Failed to persist reminder record for task ${task.id} to SQLite:`, dbErr);
+    }
+
     return {
       success: true,
       identifier,
@@ -275,26 +288,42 @@ export async function scheduleTaskReminderAsync(
 /**
  * Cancel any scheduled local notification matching the given taskId.
  */
+/**
+ * Cancel any scheduled local notification matching the given taskId.
+ */
 export async function cancelTaskReminderAsync(taskId: number): Promise<boolean> {
   const Notifications = getNotifications();
-  if (!Notifications) return false;
+  let cancelled = false;
 
+  // 1. Delete and fetch saved notification id from SQLite
   try {
-    const scheduledList = await Notifications.getAllScheduledNotificationsAsync();
-    let cancelled = false;
-
-    for (const item of scheduledList) {
-      if (item.content.data?.taskId === taskId) {
-        await Notifications.cancelScheduledNotificationAsync(item.identifier);
-        cancelled = true;
-      }
+    const { getTaskReminderRecordAsync, deleteTaskReminderRecordAsync } = require('@/services/database');
+    const savedRecord = await getTaskReminderRecordAsync(taskId);
+    if (savedRecord?.notification_id && Notifications) {
+      await Notifications.cancelScheduledNotificationAsync(savedRecord.notification_id);
+      cancelled = true;
     }
-
-    return cancelled;
-  } catch (error) {
-    console.error(`Error cancelling reminder for task ${taskId}:`, error);
-    return false;
+    await deleteTaskReminderRecordAsync(taskId);
+  } catch (dbErr) {
+    console.warn(`[Notifications] SQLite reminder lookup error for task ${taskId}:`, dbErr);
   }
+
+  // 2. Also scan OS active reminders to ensure no orphaned alarms exist
+  if (Notifications) {
+    try {
+      const scheduledList = await Notifications.getAllScheduledNotificationsAsync();
+      for (const item of scheduledList) {
+        if (item.content.data?.taskId === taskId) {
+          await Notifications.cancelScheduledNotificationAsync(item.identifier);
+          cancelled = true;
+        }
+      }
+    } catch (error) {
+      console.error(`Error cancelling reminder for task ${taskId}:`, error);
+    }
+  }
+
+  return cancelled;
 }
 
 /**
@@ -359,4 +388,59 @@ export async function rescheduleAllPendingTaskRemindersAsync(
   }
 
   return count;
+}
+
+/**
+ * Reconciles scheduled local notifications with the SQLite database on app startup or reboot.
+ * Cancels orphaned alarms and reschedules any pending future task reminders that are missing.
+ */
+export async function reconcileScheduledRemindersWithDatabaseAsync(): Promise<{ restored: number; cleaned: number }> {
+  const Notifications = getNotifications();
+  if (!Notifications) return { restored: 0, cleaned: 0 };
+
+  let restored = 0;
+  let cleaned = 0;
+
+  try {
+    const { getLocalTasksAsync, deleteTaskReminderRecordAsync } = require('@/services/database');
+    const tasks = await getLocalTasksAsync();
+    const taskMap = new Map<number, any>(tasks.map((t: any) => [t.id, t]));
+
+    const scheduledList = await Notifications.getAllScheduledNotificationsAsync();
+    const activeNotificationTaskIds = new Set(
+      scheduledList.map((n: any) => n.content.data?.taskId).filter((id: any) => typeof id === 'number')
+    );
+
+    const nowMs = Date.now();
+
+    // 1. Restore future pending tasks with reminders
+    for (const task of tasks) {
+      if (task.is_completed || !task.scheduled_at || task.reminder_minutes === null) continue;
+      const taskTimeMs = new Date(task.scheduled_at).getTime();
+      const offset = task.reminder_minutes ?? 0;
+      const triggerTimeMs = taskTimeMs - offset * 60 * 1000;
+
+      if (triggerTimeMs > nowMs && !activeNotificationTaskIds.has(task.id)) {
+        const res = await scheduleTaskReminderAsync(task, offset);
+        if (res.success) restored++;
+      }
+    }
+
+    // 2. Clean up reminders for deleted or completed tasks
+    for (const notif of scheduledList) {
+      const taskId = notif.content.data?.taskId;
+      if (typeof taskId === 'number') {
+        const task = taskMap.get(taskId);
+        if (!task || task.is_completed || task.reminder_minutes === null) {
+          await Notifications.cancelScheduledNotificationAsync(notif.identifier);
+          await deleteTaskReminderRecordAsync(taskId);
+          cleaned++;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Notifications] Error during startup reminder reconciliation:', err);
+  }
+
+  return { restored, cleaned };
 }

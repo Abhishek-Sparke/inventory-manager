@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   View,
@@ -14,11 +14,22 @@ import {
 } from 'react-native';
 
 import { TASKS_API_URL } from '@/constants/api';
+import { getInstallationHeadersAsync } from '@/services/installation';
+import {
+  getLocalTasksAsync,
+  createLocalTaskAsync,
+  updateLocalTaskAsync,
+  toggleLocalTaskCompletionAsync,
+  deleteLocalTaskAsync,
+  getAllLocalDailyProgressAsync,
+  importTasksIntoLocalDbAsync,
+} from '@/services/database';
 import {
   scheduleTaskReminderAsync,
   cancelTaskReminderAsync,
   getActiveReminderTaskIdsAsync,
   rescheduleAllPendingTaskRemindersAsync,
+  reconcileScheduledRemindersWithDatabaseAsync,
 } from '@/services/notifications';
 import {
   subscribeToTaskChanges,
@@ -27,13 +38,18 @@ import {
   markTasksFetched,
   setFetchInProgress,
 } from '@/services/task-sync';
-import { syncWidgetDataAsync } from '@/services/widget-data';
+import {
+  syncWidgetDataAsync,
+  syncWidgetDataFromDbAsync,
+  processPendingWidgetActionsAsync,
+} from '@/services/widget-data';
 import {
   fetchDailyProgress,
   fetchDailyProgressList,
   saveDailyProgress,
   DailyProgress,
 } from '@/services/daily-progress';
+import { getUserFacingErrorMessage } from '@/utils/errors';
 import {
   getLocalDateString,
   getTaskLocalDateString,
@@ -68,8 +84,17 @@ export function isTaskDone(t: Task): boolean {
   return Boolean(t.is_completed || t.status === 'completed');
 }
 
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  return await getInstallationHeadersAsync();
+}
+
 export default function TasksScreen() {
-  const params = useLocalSearchParams<{ view?: string }>();
+  const params = useLocalSearchParams<{
+    view?: string;
+    action?: string;
+    taskId?: string;
+    editTaskId?: string;
+  }>();
   const [activeTab, setActiveTab] = useState<UnifiedViewTab>(
     params.view === 'calendar' ? 'calendar' : 'today'
   );
@@ -96,19 +121,65 @@ export default function TasksScreen() {
   const [modalInitialDate, setModalInitialDate] = useState(() => getLocalDateString());
   const [savingTask, setSavingTask] = useState(false);
   const [deletingTaskId, setDeletingTaskId] = useState<number | null>(null);
+  const activeRequestIdRef = useRef(0);
 
-  // Switch to calendar if query param specified
+  // Switch to calendar or today if query param specified (e.g. planner redirect or widget deep link)
   useEffect(() => {
     if (params.view === 'calendar') {
       setActiveTab('calendar');
+    } else if (params.view === 'today') {
+      setActiveTab('today');
     }
   }, [params.view]);
+
+  // Handle widget deep link actions (new, edit or toggle)
+  useEffect(() => {
+    const rawTargetId = params.editTaskId || (params.action === 'edit' ? params.taskId : undefined);
+    if (rawTargetId) {
+      const targetId = parseInt(rawTargetId, 10);
+      if (!isNaN(targetId)) {
+        (async () => {
+          try {
+            let task = tasks.find(t => t.id === targetId);
+            if (!task) {
+              task = (await getLocalTaskByIdAsync(targetId)) || undefined;
+            }
+            if (task) {
+              openEditTaskModal(task);
+            }
+          } catch (err) {
+            console.warn('[Tasks] Failed to open edit modal for deep link:', err);
+          }
+        })();
+      }
+    } else if (params.action === 'toggle' && params.taskId) {
+      const targetId = parseInt(params.taskId, 10);
+      if (!isNaN(targetId)) {
+        (async () => {
+          try {
+            let task = tasks.find(t => t.id === targetId);
+            if (!task) {
+              task = (await getLocalTaskByIdAsync(targetId)) || undefined;
+            }
+            if (task) {
+              await handleToggleTask(task);
+            }
+          } catch (err) {
+            console.warn('[Tasks] Failed to toggle task for deep link:', err);
+          }
+        })();
+      }
+    } else if (params.action === 'new' || params.action === 'add' || params.action === 'create') {
+      openCreateTaskModal();
+    }
+  }, [params.action, params.taskId, params.editTaskId, tasks.length]);
 
   // Load Tasks and Daily Progress
   const loadData = useCallback(async (pullToRefresh = false, force = false) => {
     if (!force && !pullToRefresh && !shouldFetchTasks(1500)) {
       return;
     }
+    const requestId = ++activeRequestIdRef.current;
     setFetchInProgress(true);
     if (pullToRefresh) {
       setRefreshing(true);
@@ -117,58 +188,151 @@ export default function TasksScreen() {
     }
 
     setError('');
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    let didTimeout = false;
+    let controller: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    // 0. On iOS, process any queued widget actions before reading SQLite
+    if (Platform.OS === 'ios') {
+      try {
+        await processPendingWidgetActionsAsync();
+      } catch {}
+    }
+
+    // 1. Immediately read from local SQLite database (instant offline load)
+    try {
+      const localTasks = await getLocalTasksAsync();
+      if (localTasks.length > 0 || tasks.length === 0) {
+        setTasks(localTasks);
+        setLoading(false);
+      }
+      const localPList = await getAllLocalDailyProgressAsync();
+      if (localPList.length > 0) {
+        const pMap: Record<string, DailyProgress> = {};
+        for (const item of localPList) {
+          pMap[item.date] = item;
+        }
+        setDailyProgressMap(pMap);
+      }
+    } catch (dbErr) {
+      console.warn('[Tasks] SQLite initial load notice:', dbErr);
+    }
 
     try {
-      // 1. Fetch tasks from backend
-      const response = await fetch(TASKS_API_URL, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-      });
+      // 2. Resolve installation credentials FIRST before starting the resource fetch timer
+      const authHeaders = await getAuthHeaders();
+
+      // 3. Start dedicated bounded timeout for the tasks resource request
+      controller = new AbortController();
+      timeoutId = setTimeout(() => {
+        didTimeout = true;
+        controller?.abort();
+      }, 60000);
+
+      // Fetch tasks from backend and daily progress entries in parallel
+      let response: Response;
+      let progressList: DailyProgress[] = [];
+      try {
+        const [taskRes, pList] = await Promise.all([
+          fetch(TASKS_API_URL, {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              ...authHeaders,
+            },
+            signal: controller.signal,
+          }),
+          fetchDailyProgressList().catch(err => {
+            console.warn('[Tasks] Non-fatal daily progress fetch error:', err);
+            return [] as DailyProgress[];
+          }),
+        ]);
+        response = taskRes;
+        progressList = pList;
+      } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+      }
 
       if (!response.ok) {
         throw new Error(`API returned HTTP ${response.status}`);
       }
 
       const data = await response.json();
+
+      // Prevent stale response from overwriting newer state
+      if (requestId !== activeRequestIdRef.current) {
+        return;
+      }
+
       const taskList: Task[] = Array.isArray(data)
         ? data
         : Array.isArray(data.results)
           ? data.results
           : [];
 
-      setTasks(taskList);
+      // Import server tasks safely into local SQLite without discarding newer local tasks
+      if (taskList.length > 0) {
+        await importTasksIntoLocalDbAsync(taskList);
+      }
+      const currentTasks = await getLocalTasksAsync();
+      setTasks(currentTasks);
       markTasksFetched();
 
-      // 2. Load daily progress entries
-      const progressList = await fetchDailyProgressList();
       const pMap: Record<string, DailyProgress> = {};
       for (const item of progressList) {
         pMap[item.date] = item;
       }
       setDailyProgressMap(pMap);
 
-      // 3. Sync active scheduled notifications from local device
-      const activeReminders = await getActiveReminderTaskIdsAsync();
-      setReminderTaskIds(activeReminders);
+      // Sync active scheduled notifications and restore alarms in background without blocking screen render
+      getActiveReminderTaskIdsAsync().then(activeReminders => {
+        if (requestId === activeRequestIdRef.current) {
+          setReminderTaskIds(activeReminders);
+        }
+      }).catch(err => {
+        console.warn('Failed to retrieve active reminders:', err);
+      });
 
-      // 4. Restore alarms if needed for pending future tasks
-      await rescheduleAllPendingTaskRemindersAsync(taskList);
+      reconcileScheduledRemindersWithDatabaseAsync().catch(err => {
+        console.warn('Failed to reconcile task alarms with SQLite:', err);
+      });
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.name === 'AbortError'
-            ? 'Request timed out after 15 seconds. Check the server and network.'
-            : `${err.name}: ${err.message}`
-          : String(err);
-      setError(message);
+      if (requestId !== activeRequestIdRef.current) {
+        return;
+      }
+
+      const isTimeout =
+        didTimeout ||
+        (controller && controller.signal.aborted) ||
+        (err instanceof Error &&
+          (err.name === 'AbortError' ||
+            /cancel|aborted/i.test(err.message)));
+
+      const message = isTimeout
+        ? 'The server is taking longer than expected. Please retry.'
+        : getUserFacingErrorMessage(err);
+
+      // In offline mode with local tasks, operate seamlessly without disruptive error banners
+      const localTasks = await getLocalTasksAsync().catch(() => []);
+      if (localTasks.length > 0) {
+        setTasks(localTasks);
+        if (pullToRefresh && tasks.length === 0) {
+          setError(message);
+        }
+      } else if (pullToRefresh || tasks.length === 0) {
+        setError(message);
+      }
     } finally {
-      clearTimeout(timeoutId);
-      setFetchInProgress(false);
-      setLoading(false);
-      setRefreshing(false);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (requestId === activeRequestIdRef.current) {
+        setFetchInProgress(false);
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [tasks.length]);
 
@@ -191,11 +355,10 @@ export default function TasksScreen() {
     }, [loadData])
   );
 
-  // Sync widget snapshot on tasks update
+  // Sync widget snapshot on tasks update (syncs even when empty to clear stale items)
   useEffect(() => {
-    if (tasks.length > 0) {
-      syncWidgetDataAsync(tasks);
-    }
+    syncWidgetDataAsync(tasks);
+    syncWidgetDataFromDbAsync().catch(() => {});
   }, [tasks]);
 
   // Group tasks by their device-local calendar date
@@ -364,58 +527,49 @@ export default function TasksScreen() {
     return [];
   }, [rangeStart, rangeEnd]);
 
-  // Action: Toggle Task Completion
+  // Action: Toggle Task Completion (100% Offline-First)
   async function handleToggleTask(task: Task) {
     const targetStatus = !task.is_completed;
     const targetStatusStr: TaskStatus = targetStatus ? 'completed' : 'pending';
 
-    // Optimistic update
-    setTasks(prev =>
-      prev.map(t =>
-        t.id === task.id
-          ? { ...t, is_completed: targetStatus, status: targetStatusStr }
-          : t
-      )
-    );
-
-    // Cancel or reschedule reminder
-    if (targetStatus) {
-      await cancelTaskReminderAsync(task.id);
-      setReminderTaskIds(prev => {
-        const next = new Set(prev);
-        next.delete(task.id);
-        return next;
-      });
-    } else if (task.scheduled_at) {
-      const res = await scheduleTaskReminderAsync({ ...task, is_completed: false });
-      if (res.success) {
-        setReminderTaskIds(prev => new Set(prev).add(task.id));
-      }
-    }
-
     try {
-      const response = await fetch(`${TASKS_API_URL}${task.id}/`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ is_completed: targetStatus, status: targetStatusStr }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server returned HTTP ${response.status}`);
-      }
-
-      const updated = await response.json();
+      // 1. Atomic update in local SQLite database (single source of truth)
+      const updated = await toggleLocalTaskCompletionAsync(task.id);
       setTasks(prev => prev.map(t => (t.id === task.id ? updated : t)));
       notifyTaskChange();
+      syncWidgetDataFromDbAsync().catch(() => {});
+
+      // 2. Cancel or reschedule local notification reminder
+      if (updated.is_completed) {
+        await cancelTaskReminderAsync(task.id);
+        setReminderTaskIds(prev => {
+          const next = new Set(prev);
+          next.delete(task.id);
+          return next;
+        });
+      } else if (updated.scheduled_at) {
+        const res = await scheduleTaskReminderAsync(updated, updated.reminder_minutes ?? 0);
+        if (res.success) {
+          setReminderTaskIds(prev => new Set(prev).add(task.id));
+        }
+      }
+
+      // 3. Best-effort background cloud sync (does not block or throw)
+      (async () => {
+        try {
+          const authHeaders = await getAuthHeaders();
+          await fetch(`${TASKS_API_URL}${task.id}/`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              ...authHeaders,
+            },
+            body: JSON.stringify({ is_completed: targetStatus, status: targetStatusStr }),
+          });
+        } catch {}
+      })();
     } catch (err) {
-      // Revert on error
-      setTasks(prev =>
-        prev.map(t =>
-          t.id === task.id
-            ? { ...t, is_completed: !targetStatus, status: !targetStatus ? 'completed' : 'pending' }
-            : t
-        )
-      );
       Alert.alert(
         'Update failed',
         err instanceof Error ? err.message : 'Could not update task status.'
@@ -423,34 +577,41 @@ export default function TasksScreen() {
     }
   }
 
-  // Action: Delete Task
+  // Action: Delete Task (100% Offline-First)
   async function performDelete(task: Task) {
-    const deleteUrl = `${TASKS_API_URL.replace(/\/$/, '')}/${task.id}/`;
     setDeletingTaskId(task.id);
 
     try {
-      const response = await fetch(deleteUrl, {
-        method: 'DELETE',
-        headers: { Accept: 'application/json' },
-      });
+      // 1. Delete from local SQLite database (single source of truth)
+      await deleteLocalTaskAsync(task.id);
 
-      if (!response.ok) {
-        let errorDetail = `HTTP ${response.status}`;
-        try {
-          const errData = await response.json();
-          errorDetail = errData?.detail || JSON.stringify(errData);
-        } catch {}
-        throw new Error(`Server returned status ${response.status}: ${errorDetail}`);
-      }
-
-      setTasks(prev => prev.filter(t => t.id !== task.id));
-      notifyTaskChange();
+      // 2. Cancel local notification reminder
       await cancelTaskReminderAsync(task.id);
       setReminderTaskIds(prev => {
         const next = new Set(prev);
         next.delete(task.id);
         return next;
       });
+
+      // 3. Update React state & notify listeners
+      setTasks(prev => prev.filter(t => t.id !== task.id));
+      notifyTaskChange();
+      syncWidgetDataFromDbAsync().catch(() => {});
+
+      // 4. Best-effort background cloud sync (does not block or throw)
+      (async () => {
+        try {
+          const authHeaders = await getAuthHeaders();
+          const deleteUrl = `${TASKS_API_URL.replace(/\/$/, '')}/${task.id}/`;
+          await fetch(deleteUrl, {
+            method: 'DELETE',
+            headers: {
+              Accept: 'application/json',
+              ...authHeaders,
+            },
+          });
+        } catch {}
+      })();
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Could not delete task.';
       if (Platform.OS === 'web' && typeof window !== 'undefined' && window.alert) {
@@ -558,8 +719,8 @@ export default function TasksScreen() {
       const journalNote = (payload.journalEntry || payload.notes || payload.description || '').trim();
 
       if (editingTask) {
-        // UPDATE existing task
-        const bodyPayload = {
+        // UPDATE existing task in local SQLite (single source of truth)
+        const updated = await updateLocalTaskAsync(editingTask.id, {
           title: payload.title,
           description: journalNote,
           priority: payload.priority,
@@ -568,25 +729,41 @@ export default function TasksScreen() {
           scheduled_at: scheduledIso,
           end_at: endIso,
           notes: journalNote,
+          journal_entry: journalNote,
           reminder_minutes: payload.reminderEnabled ? payload.reminderOffset : null,
-        };
-
-        const res = await fetch(`${TASKS_API_URL}${editingTask.id}/`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-          body: JSON.stringify(bodyPayload),
         });
 
-        if (!res.ok) {
-          const errData = await res.json();
-          throw new Error(JSON.stringify(errData));
-        }
-
-        const updated: Task = await res.json();
         setTasks(prev => prev.map(t => (t.id === updated.id ? updated : t)));
         notifyTaskChange();
+        syncWidgetDataFromDbAsync().catch(() => {});
 
-        // Associate with DailyProgress journal
+        // Best-effort background cloud sync (does not block or throw)
+        (async () => {
+          try {
+            const authHeaders = await getAuthHeaders();
+            await fetch(`${TASKS_API_URL}${editingTask.id}/`, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                ...authHeaders,
+              },
+              body: JSON.stringify({
+                title: payload.title,
+                description: journalNote,
+                priority: payload.priority,
+                status: payload.status,
+                is_completed: payload.status === 'completed',
+                scheduled_at: scheduledIso,
+                end_at: endIso,
+                notes: journalNote,
+                reminder_minutes: payload.reminderEnabled ? payload.reminderOffset : null,
+              }),
+            });
+          } catch {}
+        })();
+
+        // Associate with DailyProgress journal in local SQLite
         if (journalNote && payload.date) {
           try {
             const existingDp = dailyProgressMap[payload.date] || (await fetchDailyProgress(payload.date));
@@ -628,7 +805,7 @@ export default function TasksScreen() {
         setEditingTask(null);
         Alert.alert('Task Updated', `Task updated successfully! Preserved time: ${payload.startTime}`);
       } else {
-        // CREATE new task(s)
+        // CREATE new task(s) in local SQLite (single source of truth)
         const targetDates =
           payload.scheduleAcrossRange && activeRangeDays.length > 1
             ? activeRangeDays
@@ -642,7 +819,7 @@ export default function TasksScreen() {
             ? buildScheduledIsoString(dateItem, payload.endTime)
             : null;
 
-          const bodyPayload = {
+          const created = await createLocalTaskAsync({
             title: payload.title,
             description: journalNote,
             priority: payload.priority,
@@ -651,24 +828,39 @@ export default function TasksScreen() {
             scheduled_at: itemScheduledIso,
             end_at: itemEndIso,
             notes: journalNote,
+            journal_entry: journalNote,
             reminder_minutes: payload.reminderEnabled ? payload.reminderOffset : null,
-          };
-
-          const res = await fetch(TASKS_API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-            body: JSON.stringify(bodyPayload),
           });
 
-          if (!res.ok) {
-            const errData = await res.json();
-            throw new Error(JSON.stringify(errData));
-          }
-
-          const created: Task = await res.json();
           createdItems.push(created);
 
-          // Associate with DailyProgress journal for this date
+          // Best-effort background cloud sync (does not block or throw)
+          (async () => {
+            try {
+              const authHeaders = await getAuthHeaders();
+              await fetch(TASKS_API_URL, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Accept: 'application/json',
+                  ...authHeaders,
+                },
+                body: JSON.stringify({
+                  title: created.title,
+                  description: created.description,
+                  priority: created.priority,
+                  status: created.status,
+                  is_completed: created.is_completed,
+                  scheduled_at: created.scheduled_at,
+                  end_at: created.end_at,
+                  notes: created.notes,
+                  reminder_minutes: created.reminder_minutes,
+                }),
+              });
+            } catch {}
+          })();
+
+          // Associate with DailyProgress journal for this date in local SQLite
           if (journalNote) {
             try {
               const existingDp = dailyProgressMap[dateItem] || (await fetchDailyProgress(dateItem));
@@ -701,6 +893,7 @@ export default function TasksScreen() {
 
         setTasks(prev => [...createdItems, ...prev]);
         notifyTaskChange();
+        syncWidgetDataFromDbAsync().catch(() => {});
         setTaskModalVisible(false);
 
         Alert.alert(

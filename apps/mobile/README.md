@@ -1,56 +1,160 @@
-# Welcome to your Expo app 👋
+# StockFlow Mobile Client (React Native & Expo)
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+The StockFlow mobile application is an offline-first inventory management and workflow companion built with **Expo SDK 57**, **React Native 0.86**, **Expo Router**, **Expo SQLite**, and **Android Home Screen AppWidgets**.
 
-## Get started
+---
 
-1. Install dependencies
+## Key Architecture & Features
 
-   ```bash
-   npm install
-   ```
+- **Offline-First SQLite Engine**: Powered by `expo-sqlite` (WAL mode enabled). Tasks, product catalogs, and daily progress logs are written locally first with zero latency, and synchronized with the Django REST API in the background.
+- **Hardware-Backed Zero-Trust Authentication**: Automatically bootstraps on initial launch via `POST /api/installations/bootstrap/`. Credentials are kept in hardware-backed secure storage using **Expo SecureStore** (`stockflow_installation_id_v1` and `stockflow_installation_token_v1`).
+- **Android Home Screen Widgets**: Built using `react-native-android-widget` to give warehouse operators live glanceable inventory counters, high-priority task alerts, and daily progress summaries directly on their Android launcher.
+- **Cross-Tab Synchronizer**: Shared in-memory event bus (`src/services/task-sync.ts`) instantly keeps the Tasks tab, Planner tab, and Widgets in sync without duplicate or redundant network roundtrips.
+- **Expo Push Notifications**: Supports background alerts for task deadlines and low inventory stock levels.
 
-2. Start the app
+---
 
-   ```bash
-   npx expo start
-   ```
+## Directory Layout
 
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```
+apps/mobile/
+├── app.json                  # Expo app configuration, schemes & plugins
+├── package.json              # Dependencies and run scripts
+├── index.ts                  # Entry point registering widget background tasks
+├── plugins/                  # Expo Config Plugins
+│   └── withCleartextTraffic.js # Configures cleartext HTTP & widget broadcast receivers
+├── scripts/                  # Automated verification test runners
+│   ├── test-scenarios.js     # Validates offline sync, database CRUD & API edge cases
+│   ├── test-widget.js        # Validates widget data extraction & layouts
+│   └── test-ios-config.js    # Validates iOS schemes & entitlements
+└── src/
+    ├── app/                  # Expo Router file-based screens
+    │   ├── _layout.tsx       # Root layout & tab bar navigation
+    │   ├── index.tsx         # Inventory overview & stock management screen
+    │   ├── tasks.tsx         # Task scheduling & priority tracker
+    │   ├── planner.tsx       # Daily operational planner & progress journal
+    │   └── explore.tsx       # Metrics, analytics & device recovery
+    ├── components/           # Reusable UI cards, inputs, and modal sheets
+    ├── constants/            # API URLs and design tokens
+    ├── services/             # Core logic: database.ts, installation.ts, task-sync.ts
+    └── widgets/              # Home screen widget templates
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+---
 
-### Other setup steps
+## Command Reference
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+All commands must be executed within the `apps/mobile/` directory:
 
-## Learn more
+```bash
+cd apps/mobile
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+### 1. Installation
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+# Install dependencies according to package-lock.json
+npm install
+```
 
-## Join the community
+> [!NOTE]
+> On Windows PowerShell, if you see an error that `running scripts is disabled on this system`, run `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` in PowerShell, or alternatively run commands with `.cmd` (e.g. `npm.cmd install`, `npm.cmd test`).
 
-Join our community of developers creating universal apps.
+> [!IMPORTANT]
+> When adding new dependencies, always run:
+> ```bash
+> npx expo install <package-name>
+> ```
+> This guarantees that compatible versions for Expo SDK 57 are selected.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+---
+
+### 2. Development Server Commands
+
+| Command | Description |
+| :--- | :--- |
+| `npm start` | Starts the Metro bundler server (`npx expo start`) |
+| `npm run start:tunnel` | Starts Metro with an ngrok tunnel (bypasses local network/firewall limits) |
+| `npm run start:clear` | Starts Metro after clearing the cache (`npx expo start -c`) |
+| `npm run web` | Launches the app in a web browser preview (`npx expo start --web`) |
+
+While Metro is running in your terminal, press:
+- `a` — Open on a connected Android device or running emulator
+- `i` — Open on an iOS simulator (macOS only)
+- `w` — Open in your desktop web browser
+- `r` — Reload the app bundle
+- `?` — Show all keyboard shortcuts
+
+---
+
+### 3. Native Run Commands
+
+```bash
+# Compile and run natively on Android device or emulator
+npm run android
+
+# Compile and run natively on iOS simulator (macOS with Xcode)
+npm run ios
+```
+
+---
+
+### 4. Automated Tests & Code Quality
+
+```bash
+# Run complete test suite (test-scenarios + test-widget + test-ios-config)
+npm test
+
+# Run linter
+npm run lint
+
+# Run TypeScript typechecker without emitting files
+npx tsc --noEmit
+
+# Run Expo health check
+npx expo-doctor
+```
+
+---
+
+### 5. Connecting to the Backend
+
+By default, the mobile app connects to:
+- Production/Render: `https://stockflow-api-lv0v.onrender.com/api`
+
+To point to your local development backend:
+
+#### For Android Emulator:
+Use Android's loopback alias `10.0.2.2`:
+```powershell
+# Windows PowerShell
+$env:EXPO_PUBLIC_API_URL="http://10.0.2.2:8000/api"; npm start
+
+# macOS / Linux
+EXPO_PUBLIC_API_URL="http://10.0.2.2:8000/api" npm start
+```
+
+#### For Physical Phone:
+Use your machine's local network IP (e.g. `192.168.1.50`):
+```powershell
+# Windows PowerShell
+$env:EXPO_PUBLIC_API_URL="http://192.168.1.50:8000/api"; npm run start:tunnel
+```
+
+---
+
+### 6. Standalone & Production Cloud Builds (EAS)
+
+```bash
+# Authenticate with Expo Application Services
+npx eas-cli login
+
+# Build development client APK for Android testing
+npx eas-cli build --profile development --platform android
+
+# Build production release for Google Play & Apple App Store
+npx eas-cli build --profile production --platform all
+
+# Deploy instant over-the-air (OTA) updates
+npx eas-cli update --branch production --message "Update offline sync handler"
+```
