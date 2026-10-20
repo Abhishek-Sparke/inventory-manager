@@ -38,7 +38,11 @@ import {
   markTasksFetched,
   setFetchInProgress,
 } from '@/services/task-sync';
-import { syncWidgetDataAsync, processPendingWidgetActionsAsync } from '@/services/widget-data';
+import {
+  syncWidgetDataAsync,
+  syncWidgetDataFromDbAsync,
+  processPendingWidgetActionsAsync,
+} from '@/services/widget-data';
 import {
   fetchDailyProgress,
   fetchDailyProgressList,
@@ -128,7 +132,7 @@ export default function TasksScreen() {
     }
   }, [params.view]);
 
-  // Handle widget deep link actions (edit or toggle)
+  // Handle widget deep link actions (new, edit or toggle)
   useEffect(() => {
     const rawTargetId = params.editTaskId || (params.action === 'edit' ? params.taskId : undefined);
     if (rawTargetId) {
@@ -165,6 +169,8 @@ export default function TasksScreen() {
           }
         })();
       }
+    } else if (params.action === 'new' || params.action === 'add' || params.action === 'create') {
+      openCreateTaskModal();
     }
   }, [params.action, params.taskId, params.editTaskId, tasks.length]);
 
@@ -352,6 +358,7 @@ export default function TasksScreen() {
   // Sync widget snapshot on tasks update (syncs even when empty to clear stale items)
   useEffect(() => {
     syncWidgetDataAsync(tasks);
+    syncWidgetDataFromDbAsync().catch(() => {});
   }, [tasks]);
 
   // Group tasks by their device-local calendar date
@@ -530,6 +537,7 @@ export default function TasksScreen() {
       const updated = await toggleLocalTaskCompletionAsync(task.id);
       setTasks(prev => prev.map(t => (t.id === task.id ? updated : t)));
       notifyTaskChange();
+      syncWidgetDataFromDbAsync().catch(() => {});
 
       // 2. Cancel or reschedule local notification reminder
       if (updated.is_completed) {
@@ -588,6 +596,7 @@ export default function TasksScreen() {
       // 3. Update React state & notify listeners
       setTasks(prev => prev.filter(t => t.id !== task.id));
       notifyTaskChange();
+      syncWidgetDataFromDbAsync().catch(() => {});
 
       // 4. Best-effort background cloud sync (does not block or throw)
       (async () => {
@@ -726,6 +735,7 @@ export default function TasksScreen() {
 
         setTasks(prev => prev.map(t => (t.id === updated.id ? updated : t)));
         notifyTaskChange();
+        syncWidgetDataFromDbAsync().catch(() => {});
 
         // Best-effort background cloud sync (does not block or throw)
         (async () => {
@@ -883,6 +893,7 @@ export default function TasksScreen() {
 
         setTasks(prev => [...createdItems, ...prev]);
         notifyTaskChange();
+        syncWidgetDataFromDbAsync().catch(() => {});
         setTaskModalVisible(false);
 
         Alert.alert(

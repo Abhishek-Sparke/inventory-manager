@@ -158,12 +158,11 @@ struct TaskTimelineProvider: TimelineProvider {
         let now = Date()
         let calendar = Calendar.current
 
-        let in30Minutes = calendar.date(byAdding: .minute, value: 30, to: now)
-            ?? now.addingTimeInterval(1800)
+        let in15Seconds = now.addingTimeInterval(15)
         let nextMidnight = calendar.startOfDay(
             for: calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86400)
         ).addingTimeInterval(1)
-        let nextUpdate = min(in30Minutes, nextMidnight)
+        let nextUpdate = min(in15Seconds, nextMidnight)
 
         let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
         completion(timeline)
@@ -186,22 +185,36 @@ struct TaskTimelineProvider: TimelineProvider {
     /// If App Group is unavailable, corrupted, or empty, safely returns an empty state.
     /// Never interprets a failed read as an empty write to persistent storage.
     private func loadSnapshot() -> TaskEntry {
-        let suiteName = "group.com.sparke27.mobile"
+        let suites = [
+            "group.com.sparke27.mobile",
+            "group.com.sparke27.StockFlow",
+            "group.mobile"
+        ]
         var jsonString: String?
 
-        // Primary: UserDefaults App Group suite
-        if let sharedDefaults = UserDefaults(suiteName: suiteName) {
-            let candidate = sharedDefaults.string(forKey: "stockflow_widget_snapshot")
-            if let s = candidate, !s.isEmpty { jsonString = s }
+        // Primary: UserDefaults App Group suites
+        for suiteName in suites {
+            if let sharedDefaults = UserDefaults(suiteName: suiteName) {
+                let candidate = sharedDefaults.string(forKey: "stockflow_widget_snapshot")
+                if let s = candidate, !s.isEmpty {
+                    jsonString = s
+                    break
+                }
+            }
         }
 
-        // Fallback: App Group container file (written by the bridge as redundant backup)
+        // Fallback: App Group container files (written by the bridge as redundant backup)
         if jsonString == nil {
-            if let containerURL = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: suiteName
-            ) {
-                let fileURL = containerURL.appendingPathComponent("stockflow_widget_snapshot.json")
-                jsonString = try? String(contentsOf: fileURL, encoding: .utf8)
+            for suiteName in suites {
+                if let containerURL = FileManager.default.containerURL(
+                    forSecurityApplicationGroupIdentifier: suiteName
+                ) {
+                    let fileURL = containerURL.appendingPathComponent("stockflow_widget_snapshot.json")
+                    if let s = try? String(contentsOf: fileURL, encoding: .utf8), !s.isEmpty {
+                        jsonString = s
+                        break
+                    }
+                }
             }
         }
 
@@ -308,6 +321,11 @@ struct SmallWidgetView: View {
                         .foregroundStyle(accentBlue)
                 }
                 Spacer()
+                Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(accentBlue)
+                }
                 if total > 0 {
                     Text("\(completed)/\(total)")
                         .font(.system(size: 10, weight: .bold))
@@ -336,13 +354,26 @@ struct SmallWidgetView: View {
             // Body
             if total == 0 {
                 Spacer()
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text("All Caught Up")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.primary)
                     Text("No tasks today")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
+                    Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 8, weight: .bold))
+                            Text("Add Task")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(accentBlue.opacity(0.2))
+                        .clipShape(Capsule())
+                        .foregroundStyle(accentBlue)
+                    }
                 }
                 Spacer()
             } else {
@@ -417,6 +448,21 @@ struct MediumWidgetView: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(accentBlue)
                 }
+
+                Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                    HStack(spacing: 2) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("Add")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(accentBlue.opacity(0.2))
+                    .clipShape(Capsule())
+                    .foregroundStyle(accentBlue)
+                }
+
                 Spacer()
                 Group {
                     if entry.isStale {
@@ -458,7 +504,7 @@ struct MediumWidgetView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    VStack(spacing: 3) {
+                    VStack(spacing: 4) {
                         Image(systemName: "checklist")
                             .font(.system(size: 18))
                             .foregroundStyle(.secondary)
@@ -466,10 +512,19 @@ struct MediumWidgetView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Color(white: 0.8))
                             .multilineTextAlignment(.center)
-                        Text("All caught up • Tap to open app")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                        Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.system(size: 12, weight: .bold))
+                                Text("Add Task")
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(accentBlue.opacity(0.25))
+                            .clipShape(Capsule())
+                            .foregroundStyle(accentBlue)
+                        }
                     }
                     Spacer()
                 }
@@ -579,6 +634,11 @@ struct UpcomingSmallWidgetView: View {
                         .foregroundStyle(accentBlue)
                 }
                 Spacer()
+                Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(accentBlue)
+                }
                 if total > 0 {
                     Text("\(total)")
                         .font(.system(size: 10, weight: .bold))
@@ -589,13 +649,26 @@ struct UpcomingSmallWidgetView: View {
             // Body
             if total == 0 {
                 Spacer()
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text("Clear Horizon")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.primary)
                     Text("No upcoming tasks")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
+                    Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 8, weight: .bold))
+                            Text("Add Task")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(accentBlue.opacity(0.2))
+                        .clipShape(Capsule())
+                        .foregroundStyle(accentBlue)
+                    }
                 }
                 Spacer()
             } else {
@@ -657,6 +730,21 @@ struct UpcomingMediumWidgetView: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(accentBlue)
                 }
+
+                Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                    HStack(spacing: 2) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("Add")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(accentBlue.opacity(0.2))
+                    .clipShape(Capsule())
+                    .foregroundStyle(accentBlue)
+                }
+
                 Spacer()
                 if total > 0 {
                     Text("\(total) Scheduled")
@@ -674,7 +762,7 @@ struct UpcomingMediumWidgetView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    VStack(spacing: 3) {
+                    VStack(spacing: 4) {
                         Image(systemName: "calendar")
                             .font(.system(size: 18))
                             .foregroundStyle(.secondary)
@@ -682,10 +770,19 @@ struct UpcomingMediumWidgetView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Color(white: 0.8))
                             .multilineTextAlignment(.center)
-                        Text("Tasks scheduled for future days will appear here")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
+                        Link(destination: URL(string: "mobile://tasks?action=new")!) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.system(size: 12, weight: .bold))
+                                Text("Add Task")
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(accentBlue.opacity(0.25))
+                            .clipShape(Capsule())
+                            .foregroundStyle(accentBlue)
+                        }
                     }
                     Spacer()
                 }

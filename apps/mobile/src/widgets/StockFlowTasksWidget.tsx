@@ -50,8 +50,30 @@ export function StockFlowTasksWidget({
               fontSize: 12,
               fontWeight: 'bold',
               color: '#38BDF8',
+              marginRight: 6,
             }}
           />
+          <FlexWidget
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: '#1E293B',
+              borderRadius: 8,
+              paddingHorizontal: 6,
+              paddingVertical: 2,
+            }}
+            clickAction="OPEN_URI"
+            clickActionData={{ uri: 'mobile://tasks?action=new' }}
+          >
+            <TextWidget
+              text="+ Add"
+              style={{
+                fontSize: 9,
+                fontWeight: 'bold',
+                color: '#38BDF8',
+              }}
+            />
+          </FlexWidget>
         </FlexWidget>
 
         {isStale ? (
@@ -136,12 +158,32 @@ export function StockFlowTasksWidget({
             }}
           />
           <TextWidget
-            text={!data ? 'Tap to load your schedule' : 'All caught up • Tap to open app'}
+            text={!data ? 'Tap to load your schedule' : 'All caught up'}
             style={{
               fontSize: 10,
               color: '#64748B',
+              marginBottom: 6,
             }}
           />
+          <FlexWidget
+            style={{
+              backgroundColor: '#1E293B',
+              borderRadius: 12,
+              paddingHorizontal: 10,
+              paddingVertical: 4,
+            }}
+            clickAction="OPEN_URI"
+            clickActionData={{ uri: 'mobile://tasks?action=new' }}
+          >
+            <TextWidget
+              text="+ Add Task"
+              style={{
+                fontSize: 10,
+                fontWeight: 'bold',
+                color: '#38BDF8',
+              }}
+            />
+          </FlexWidget>
         </FlexWidget>
       ) : (
         <FlexWidget

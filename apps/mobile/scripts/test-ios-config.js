@@ -34,13 +34,14 @@ const requiredFiles = [
   'StockFlowWidget.entitlements',
   'StockFlowWidgetBridge.h',
   'StockFlowWidgetBridge.m',
+  'StockFlowWidgetReloader.swift',
 ];
 
 for (const file of requiredFiles) {
   const filePath = path.join(iosWidgetDir, file);
   assert.strictEqual(fs.existsSync(filePath), true, `Template file ${file} must exist`);
 }
-console.log('✓ Test 2 PASSED: All 5 required iOS native template files exist in plugins/ios-widget/.');
+console.log('✓ Test 2 PASSED: All 6 required iOS native template files exist in plugins/ios-widget/.');
 
 // 3. Verify Swift code contents (both widgets & bundle, no sample tasks, App Intent, Edit deep links)
 const swiftContent = fs.readFileSync(path.join(iosWidgetDir, 'StockFlowTasksWidget.swift'), 'utf8');
@@ -191,6 +192,7 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
     assert.strictEqual(pbxContent.includes('StockFlowTasksWidget.swift'), true, 'Project must contain StockFlowTasksWidget.swift');
     assert.strictEqual(pbxContent.includes('StockFlowWidgetBridge.m'), true, 'Project must contain StockFlowWidgetBridge.m');
     assert.strictEqual(pbxContent.includes('StockFlowWidgetBridge.h'), true, 'Project must contain StockFlowWidgetBridge.h');
+    assert.strictEqual(pbxContent.includes('StockFlowWidgetReloader.swift'), true, 'Project must contain StockFlowWidgetReloader.swift');
 
     const parsedProj = xcode.project(savedPbxprojPath);
     parsedProj.parseSync();
@@ -452,8 +454,10 @@ console.log('✓ Test 6 PASSED: withIosWidget config plugin successfully configu
     // Verify Swift widget has exact matching deep-link URL schema
     assert.strictEqual(swiftContent.includes('mobile://tasks?action=edit&taskId=\\(task.id)'), true, 'Swift widget must generate edit deep link');
     assert.strictEqual(swiftContent.includes('mobile://tasks?action=toggle&taskId=\\(task.id)'), true, 'Swift widget must generate toggle deep link');
+    assert.strictEqual(swiftContent.includes('mobile://tasks?action=new'), true, 'Swift widget must generate new task deep link');
+    assert.strictEqual(tasksScreenSrc.includes("params.action === 'new'"), true, 'Tasks screen must handle action=new deep link');
 
-    console.log('✓ Test 12 PASSED: Edit deep-link routing, task preloading, and bidirectional URL schema verified.');
+    console.log('✓ Test 12 PASSED: Edit and Add deep-link routing, task preloading, and bidirectional URL schema verified.');
 
     // 13. Test Empty State, Corrupted Data Safety & Android Platform Isolation
     // A. Swift widget never writes back empty data on read failure

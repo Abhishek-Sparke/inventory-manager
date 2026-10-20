@@ -99,7 +99,11 @@ module.exports = function withIosWidget(config) {
       const targetMainAppDir = mainAppDirs.length > 0 ? path.join(iosRoot, mainAppDirs[0]) : null;
 
       if (targetMainAppDir) {
-        const bridgeFiles = ['StockFlowWidgetBridge.h', 'StockFlowWidgetBridge.m'];
+        const bridgeFiles = [
+          'StockFlowWidgetBridge.h',
+          'StockFlowWidgetBridge.m',
+          'StockFlowWidgetReloader.swift',
+        ];
         for (const bFile of bridgeFiles) {
           const src = path.join(pluginAssetsDir, bFile);
           const dest = path.join(targetMainAppDir, bFile);
@@ -400,6 +404,9 @@ module.exports = function withIosWidget(config) {
           const bridgeRelH = mainAppGroupObj && mainAppGroupObj.path
             ? 'StockFlowWidgetBridge.h'
             : [mainAppGroupName, 'StockFlowWidgetBridge.h'].join('/');
+          const bridgeRelSwift = mainAppGroupObj && mainAppGroupObj.path
+            ? 'StockFlowWidgetReloader.swift'
+            : [mainAppGroupName, 'StockFlowWidgetReloader.swift'].join('/');
 
           if (!proj.hasFile(bridgeRelM)) {
             proj.addSourceFile(
@@ -411,6 +418,13 @@ module.exports = function withIosWidget(config) {
           if (!proj.hasFile(bridgeRelH)) {
             proj.addHeaderFile(
               bridgeRelH,
+              { target: mainTargetAppUuid },
+              mainAppGroupKey
+            );
+          }
+          if (!proj.hasFile(bridgeRelSwift)) {
+            proj.addSourceFile(
+              bridgeRelSwift,
               { target: mainTargetAppUuid },
               mainAppGroupKey
             );

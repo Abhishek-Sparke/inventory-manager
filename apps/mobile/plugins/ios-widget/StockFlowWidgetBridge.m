@@ -12,22 +12,26 @@ RCT_EXPORT_MODULE(StockFlowWidgetBridge);
     return NO;
 }
 
+static NSArray<NSString *> *getKnownSuites(void)
+{
+    return @[
+        @"group.com.sparke27.mobile",
+        @"group.com.sparke27.StockFlow",
+        @"group.mobile"
+    ];
+}
+
 static void reloadWidgetTimelinesSafely(void)
 {
-    if (@available(iOS 14.0, *)) {
-        Class widgetCenterClass = NSClassFromString(@"WidgetCenter");
-        if (!widgetCenterClass) {
-            widgetCenterClass = NSClassFromString(@"_TtC9WidgetKit12WidgetCenter");
-        }
-        if (widgetCenterClass && [widgetCenterClass respondsToSelector:@selector(shared)]) {
-            id sharedCenter = [widgetCenterClass performSelector:@selector(shared)];
-            if (sharedCenter && [sharedCenter respondsToSelector:@selector(reloadAllTimelines)]) {
-                [sharedCenter performSelector:@selector(reloadAllTimelines)];
-            }
-        } else {
-            SEL reloadSelector = @selector(reloadAllTimelines);
-            (void)reloadSelector;
-        }
+    Class reloader = NSClassFromString(@"StockFlowWidgetReloader");
+    if (!reloader) {
+        reloader = NSClassFromString(@"StockFlow.StockFlowWidgetReloader");
+    }
+    if (!reloader) {
+        reloader = NSClassFromString(@"mobile.StockFlowWidgetReloader");
+    }
+    if (reloader && [reloader respondsToSelector:@selector(reloadAllTimelines)]) {
+        [reloader performSelector:@selector(reloadAllTimelines)];
     }
 }
 
@@ -36,24 +40,33 @@ RCT_EXPORT_METHOD(setWidgetSnapshot:(NSString *)jsonString
                   rejecter:(RCTPromiseRejectBlock)reject)
 {
     @try {
-        NSString *suiteName = @"group.com.sparke27.mobile";
+        NSArray<NSString *> *suites = getKnownSuites();
+        for (NSString *suiteName in suites) {
+            // 1. Write to UserDefaults suite for WidgetKit
+            NSUserDefaults *sharedDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
+            if (sharedDefaults) {
+                [sharedDefaults setObject:jsonString forKey:@"stockflow_widget_snapshot"];
+                [sharedDefaults synchronize];
+            }
 
-        // 1. Write to UserDefaults suite for WidgetKit
-        NSUserDefaults *sharedDefaults = [[NSUserDefaults alloc] initWithSuiteName:suiteName];
-        if (sharedDefaults) {
-            [sharedDefaults setObject:jsonString forKey:@"stockflow_widget_snapshot"];
-            [sharedDefaults synchronize];
+            // 2. Write to shared App Group container file as backup
+            NSURL *containerURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:suiteName];
+            if (containerURL) {
+                NSURL *fileURL = [containerURL URLByAppendingPathComponent:@"stockflow_widget_snapshot.json"];
+                [jsonString writeToURL:fileURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
         }
 
-        // 2. Write to shared App Group container file as backup
-        NSURL *containerURL = [[NSFileManager defaultManager] containerURLForSecurityApplicationGroupIdentifier:suiteName];
-        if (containerURL) {
-            NSURL *fileURL = [containerURL URLByAppendingPathComponent:@"stockflow_widget_snapshot.json"];
-            [jsonString writeToURL:fileURL atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        // 3. Delegate to Swift reloader for direct WidgetKit invocation
+        Class reloader = NSClassFromString(@"StockFlowWidgetReloader");
+        if (!reloader) {
+            reloader = NSClassFromString(@"StockFlow.StockFlowWidgetReloader");
         }
-
-        // 3. Request immediate timeline reload
-        reloadWidgetTimelinesSafely();
+        if (reloader && [reloader respondsToSelector:@selector(writeSnapshotAndReload:)]) {
+            [reloader performSelector:@selector(writeSnapshotAndReload:) withObject:jsonString];
+        } else {
+            reloadWidgetTimelinesSafely();
+        }
 
         resolve(@(YES));
     } @catch (NSException *exception) {
