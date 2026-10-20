@@ -158,11 +158,11 @@ struct TaskTimelineProvider: TimelineProvider {
         let now = Date()
         let calendar = Calendar.current
 
-        let in15Seconds = now.addingTimeInterval(15)
+        let in5Seconds = now.addingTimeInterval(5)
         let nextMidnight = calendar.startOfDay(
             for: calendar.date(byAdding: .day, value: 1, to: now) ?? now.addingTimeInterval(86400)
         ).addingTimeInterval(1)
-        let nextUpdate = min(in15Seconds, nextMidnight)
+        let nextUpdate = min(in5Seconds, nextMidnight)
 
         let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
         completion(timeline)

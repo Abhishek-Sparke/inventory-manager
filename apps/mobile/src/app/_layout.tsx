@@ -33,10 +33,10 @@ export default function TabLayout() {
         refreshWidgetFromSnapshotAsync().catch(() => {});
       });
 
-      // 4. Periodic automatic refresh (every 15 seconds)
+      // 4. Periodic automatic refresh (every 5 seconds)
       const intervalId = setInterval(() => {
         refreshWidgetFromSnapshotAsync().catch(() => {});
-      }, 15 * 1000);
+      }, 5 * 1000);
 
       // 5. Schedule precise midnight rollover refresh
       const now = new Date();
